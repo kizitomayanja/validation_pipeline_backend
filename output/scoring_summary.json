@@ -1,0 +1,40 @@
+{
+  "config": {
+    "zipf_ceiling": 4.5,
+    "zipf_floor": 1.0,
+    "corpus_weight": 0.3,
+    "phrase_min_global": 0.1,
+    "winsor_pct": 99.0,
+    "w_length": 0.4,
+    "w_cost": 0.6,
+    "easy_upto": 0.4,
+    "medium_upto": 0.8
+  },
+  "n_sentences": 16061,
+  "n_lexicon_terms": 97896,
+  "n_distinct_medical_terms_found": 1179,
+  "n_curated_phrases": 0,
+  "share_sentences_with_no_medical_term": 0.4434,
+  "cost_raw_cap": 1.5961999999999967,
+  "length_cap": 97.0,
+  "cost_describe": {
+    "count": 16061.0,
+    "mean": 0.1174,
+    "std": 0.1833,
+    "min": 0.0,
+    "25%": 0.0,
+    "50%": 0.0365,
+    "75%": 0.1695,
+    "max": 1.0
+  },
+  "difficulty_counts": {
+    "easy": 6424,
+    "medium": 6424,
+    "hard": 3213
+  },
+  "difficulty_score_cutoffs": {
+    "easy_medium": 0.0634,
+    "medium_hard": 0.2012
+  },
+  "corr_cost_length": 0.508
+}

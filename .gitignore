@@ -1,0 +1,48 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments (highly critical for FastAPI)
+.venv/
+venv/
+ENV/
+env/
+
+# Environment variables & secrets (Never commit your api keys or db passwords)
+.env
+.env.*
+!.env.example
+secrets.toml
+
+# FastAPI / OpenAPI generated files (optional)
+openapi.json
+
+# Local databases (e.g., SQLite used during local testing)
+*.db
+*.sqlite3
+*.sqlite3-journal
+
+# Testing and Coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.log
+*.log
+logs/
+
+# Packaging and Distributions
+build/
+dist/
+*.egg-info/
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Operating System Files
+.DS_Store
+Thumbs.db

@@ -1,0 +1,62 @@
+"""Tests run against a REAL Postgres (bundled by the `pgserver` package) with ../schema.sql applied,
+so constraints, partial indexes, FOR UPDATE SKIP LOCKED and the user_balances view are all exercised."""
+import os
+import pathlib
+import tempfile
+
+import pgserver
+import psycopg
+import pytest
+
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+_server = pgserver.get_server(pathlib.Path(tempfile.mkdtemp()) / "pg", cleanup_mode="stop")
+URI = _server.get_uri()
+os.environ.update(DATABASE_URL=URI, JWT_SECRET="test-secret-test-secret-test-secret-123", AUTH_RATE_LIMIT="1000")
+
+with psycopg.connect(URI, autocommit=True) as c:
+    c.execute((ROOT / "schema.sql").read_text())
+
+SEED = [  # (noisy_english, attempted, cost, difficulty) -> rewards with rate 2000 / min 100: 1800, 1000, 100, 100
+    ("Do you have shortness of breath?", "attempt 1", 0.9, "hard"),
+    ("Any sputum with the cough?", "attempt 2", 0.5, "medium"),
+    ("And do you smoke?", "attempt 3", 0.05, "easy"),
+    ("No, nothing like that.", "attempt 4", 0.0, "easy"),
+]
+
+
+def sql(query, params=None, fetch=False):
+    with psycopg.connect(URI, autocommit=True) as c:
+        cur = c.execute(query, params)
+        return cur.fetchall() if fetch else None
+
+
+@pytest.fixture(autouse=True)
+def fresh_db():
+    sql("truncate sentence_skips, sentences, payouts, payment_methods, refresh_tokens, profiles restart identity cascade")
+    sql("update reward_settings set rate_ugx = 2000, min_reward_ugx = 100, min_cashout_ugx = 1000")
+    for i, (en, lug, cost, diff) in enumerate(SEED, 1):
+        sql("insert into sentences (source_row, noisy_english, attempted, length_words, cost_raw, cost, difficulty_score, difficulty) "
+            "values (%s,%s,%s,5,%s,%s,%s,%s)", (i, en, lug, cost, cost, cost, diff))
+
+
+@pytest.fixture
+def client():
+    from fastapi.testclient import TestClient
+    from app.main import app
+    with TestClient(app) as c:
+        yield c
+
+
+def make_user(client, email="a@example.com", name="Ann Validator"):
+    r = client.post("/auth/register", json={"full_name": name, "email": email, "password": "correct horse"})
+    assert r.status_code == 201, r.text
+    t = r.json()
+    return {"Authorization": f"Bearer {t['access_token']}"}, t
+
+
+@pytest.fixture
+def admin(client):
+    from app.security import hash_password
+    sql("insert into profiles (email, password_hash, full_name, role) values ('boss@example.com', %s, 'Boss', 'admin')", (hash_password("admin-password"),))
+    r = client.post("/auth/login", json={"email": "boss@example.com", "password": "admin-password"})
+    return {"Authorization": f"Bearer {r.json()['access_token']}"}
