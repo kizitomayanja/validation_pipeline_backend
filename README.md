@@ -30,7 +30,7 @@ Use `/docs` (log in via "Authorize" with an admin access token) until an admin s
 | Reward = `greatest(min_reward, round(cost * rate))`, computed server-side at submit and stored; hard sentences with >2 full stops use double cost, capped at 1 | `routers/work.py` |
 | Nobody else gets a sentence you hold (15-min claim, `FOR UPDATE SKIP LOCKED`); an expired claim can be taken over, and the late submit then gets 409 | `routers/work.py` |
 | Skipped sentences never return to that person (`sentence_skips`) | `routers/work.py` |
-| `GET /work/progress` reports finished and total sentences with the dataset completion percentage | `routers/work.py` |
+| `GET /work/progress` reports finished and total sentences with completion percentage against the 10,000-sentence target; `GET /work/finished` returns validated sentences | `routers/work.py` |
 | Cash-out takes the whole balance in one transaction under a lock on the user row; one pending payout per user (also a unique index) | `routers/payouts.py` |
 | Payout copies network/number/name at request time, so later edits or deletions don't alter history | `routers/payouts.py` |
 | Refresh tokens rotate; replaying a used token revokes the whole session family | `routers/auth.py` |

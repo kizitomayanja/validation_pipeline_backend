@@ -118,8 +118,16 @@ def test_dataset_progress_reports_finished_sentence_percentage(client):
     assert client.get("/work/progress").json() == {
         "total_sentences": 4,
         "finished_sentences": 3,
-        "completion_percentage": 75.0,
+        "completion_percentage": 0.03,
     }
+    finished = client.get("/work/finished", headers=h)
+    assert finished.status_code == 200
+    assert [sentence["id"] for sentence in finished.json()] == [1, 2, 3]
+    assert all(sentence["clean_lug"] == "ok" for sentence in finished.json())
+
+
+def test_finished_sentences_requires_authentication(client):
+    assert client.get("/work/finished").status_code == 401
 
 
 def test_hard_sentence_with_more_than_two_full_stops_has_doubled_cost(client):

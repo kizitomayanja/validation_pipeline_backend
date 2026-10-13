@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from ..config import get_settings
 from ..db import get_conn
 from ..deps import current_user
-from ..schemas import DatasetProgressOut, SubmitIn, SubmitOut, WorkOut
+from ..schemas import DatasetProgressOut, FinishedSentenceOut, SubmitIn, SubmitOut, WorkOut
 
 router = APIRouter(prefix="/work", tags=["work"])
 
@@ -15,6 +15,8 @@ EFFECTIVE_COST_SQL = """case
     then least(s.cost * 2, 1)
     else s.cost
 end"""
+
+VALIDATION_TARGET = 10_000
 
 NEXT_SQL = """
 with pick as (
@@ -44,14 +46,24 @@ def dataset_progress(conn: psycopg.Connection = Depends(get_conn)):
                   coalesce(
                       round(
                           100.0 * count(*) filter (where validated_by is not null)
-                          / nullif(count(*), 0),
+                          / {target},
                           2
                       ),
                       0
                   )::float8 as completion_percentage
-           from sentences"""
+           from sentences""".format(target=VALIDATION_TARGET)
     ).fetchone()
     return row
+
+
+@router.get("/finished", response_model=list[FinishedSentenceOut])
+def finished_sentences(user: dict = Depends(current_user), conn: psycopg.Connection = Depends(get_conn)):
+    return conn.execute(
+        """select id, noisy_english, attempted, clean_lug, validated_at
+           from sentences
+           where validated_by is not null
+           order by validated_at, id"""
+    ).fetchall()
 
 
 @router.get("/next", response_model=WorkOut, responses={204: {"description": "Nothing left to validate"}})

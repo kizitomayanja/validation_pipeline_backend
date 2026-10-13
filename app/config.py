@@ -12,9 +12,9 @@ class Settings(BaseSettings):
     access_ttl_minutes: int = 15
     refresh_ttl_days: int = 30
     claim_minutes: int = 15
-    cors_origins: str = "http://localhost:5173"
+    cors_origins: str = "https://validation-frontend-phi.vercel.app"
     auth_rate_limit: int = 10
-    frontend_url: str = "http://localhost:5173"
+    frontend_url: str = "https://validation-frontend-phi.vercel.app"
     password_reset_ttl_minutes: int = 30
     smtp_host: str | None = None
     smtp_port: int = 587

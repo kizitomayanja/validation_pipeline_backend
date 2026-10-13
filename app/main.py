@@ -28,3 +28,6 @@ def health():
     with app.state.pool.connection() as conn:
         conn.execute("select 1")
     return {"status": "ok"}
+
+
+__all__ = ["app"]

@@ -93,6 +93,14 @@ class DatasetProgressOut(BaseModel):
     completion_percentage: float
 
 
+class FinishedSentenceOut(BaseModel):
+    id: int
+    noisy_english: str
+    attempted: str
+    clean_lug: str
+    validated_at: datetime
+
+
 class SubmitIn(BaseModel):
     clean_lug: str = Field(max_length=2000)
 
