@@ -1,5 +1,6 @@
 import pathlib
 from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -62,7 +63,88 @@ def test_logout_revokes_session_and_deactivated_users_are_locked_out(client):
     assert client.post("/auth/login", json={"email": "a@example.com", "password": "correct horse"}).status_code == 403
 
 
+def test_password_reset_email_and_single_use_token(client, capsys):
+    _, tokens = make_user(client)
+    request = client.post("/auth/password-reset/request", json={"email": "a@example.com"})
+    assert request.status_code == 200
+    assert request.json()["message"] == "If an account exists for that email, a password reset link has been sent."
+    output = capsys.readouterr().out
+    assert "To: a@example.com" in output
+    reset_url = next(line for line in output.splitlines() if "token=" in line)
+    reset_token = parse_qs(urlparse(reset_url).query)["token"][0]
+
+    assert client.post(
+        "/auth/password-reset/confirm",
+        json={"token": reset_token, "new_password": "a brand new password"},
+    ).status_code == 200
+    assert client.post(
+        "/auth/password-reset/confirm",
+        json={"token": reset_token, "new_password": "another new password"},
+    ).status_code == 400
+    assert client.post(
+        "/auth/login",
+        json={"email": "a@example.com", "password": "correct horse"},
+    ).status_code == 401
+    assert client.post(
+        "/auth/login",
+        json={"email": "a@example.com", "password": "a brand new password"},
+    ).status_code == 200
+    assert client.post("/auth/refresh", json={"refresh_token": tokens["refresh_token"]}).status_code == 401
+
+
+def test_password_reset_request_does_not_reveal_unknown_email(client, capsys):
+    response = client.post("/auth/password-reset/request", json={"email": "missing@example.com"})
+    assert response.status_code == 200
+    assert response.json()["message"] == "If an account exists for that email, a password reset link has been sent."
+    assert capsys.readouterr().out == ""
+
+
 # ------------------------------------------------------------------ work
+def test_dataset_progress_reports_finished_sentence_percentage(client):
+    assert client.get("/work/progress").json() == {
+        "total_sentences": 4,
+        "finished_sentences": 0,
+        "completion_percentage": 0.0,
+    }
+    h, _ = make_user(client)
+    for sentence_id in (1, 2, 3):
+        client.get("/work/next", headers=h)
+        response = client.post(
+            f"/work/{sentence_id}/submit",
+            headers=h,
+            json={"clean_lug": "ok"},
+        )
+        assert response.status_code == 200
+    assert client.get("/work/progress").json() == {
+        "total_sentences": 4,
+        "finished_sentences": 3,
+        "completion_percentage": 75.0,
+    }
+
+
+def test_hard_sentence_with_more_than_two_full_stops_has_doubled_cost(client):
+    h, _ = make_user(client)
+    sql("update sentences set noisy_english = 'First. Second. Third.', cost = 0.4 where id = 1")
+    sentence = client.get("/work/next", headers=h).json()
+    assert sentence["id"] == 1
+    assert sentence["reward_ugx"] == 1600
+    submitted = client.post(
+        "/work/1/submit",
+        headers=h,
+        json={"clean_lug": "ok"},
+    )
+    assert submitted.json()["reward_ugx"] == 1600
+    assert sql("select cost from sentences where id = 1", fetch=True)[0][0] == 0.4
+
+
+def test_hard_sentence_with_two_full_stops_keeps_original_cost(client):
+    h, _ = make_user(client)
+    sql("update sentences set noisy_english = 'First. Second.', cost = 0.4 where id = 1")
+    sentence = client.get("/work/next", headers=h).json()
+    assert sentence["id"] == 1
+    assert sentence["reward_ugx"] == 800
+
+
 def test_next_serves_highest_cost_and_resumes_the_same_claim(client):
     h, _ = make_user(client)
     s = client.get("/work/next", headers=h).json()

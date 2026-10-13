@@ -25,6 +25,17 @@ create table refresh_tokens (
 );
 create index on refresh_tokens (user_id);
 
+-- Password-reset tokens are random, single-use credentials; only their SHA-256 hashes are stored.
+create table password_reset_tokens (
+  id          uuid primary key default gen_random_uuid(),
+  user_id     uuid not null references profiles(id) on delete cascade,
+  token_hash  text not null unique,
+  expires_at  timestamptz not null,
+  used_at     timestamptz,
+  created_at  timestamptz not null default now()
+);
+create index password_reset_tokens_user_id on password_reset_tokens (user_id);
+
 -- Mobile money accounts. account_name is the name the network registered for the number
 -- and may differ from profiles.full_name.
 create table payment_methods (

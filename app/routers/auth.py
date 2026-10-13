@@ -1,14 +1,18 @@
 import uuid
+import smtplib
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode
 
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Response
 
 from ..config import get_settings
 from ..db import get_conn
-from ..schemas import LoginIn, RefreshIn, RegisterIn, TokensOut
-from ..security import (DUMMY_HASH, create_access_token, hash_password, hash_token, new_refresh_token, rate_limit,
-                        verify_password)
+from ..mailer import send_password_reset_email
+from ..schemas import (LoginIn, MessageOut, PasswordResetConfirmIn, PasswordResetRequestIn, RefreshIn, RegisterIn,
+                       TokensOut)
+from ..security import (DUMMY_HASH, create_access_token, hash_password, hash_token, new_password_reset_token,
+                        new_refresh_token, rate_limit, verify_password)
 
 router = APIRouter(prefix="/auth", tags=["auth"], dependencies=[Depends(rate_limit)])
 _BAD_LOGIN = HTTPException(401, "Email or password is incorrect.")
@@ -72,3 +76,60 @@ def logout(body: RefreshIn, conn: psycopg.Connection = Depends(get_conn)):
                     where revoked_at is null and family_id in (select family_id from refresh_tokens where token_hash = %s)""",
                  (hash_token(body.refresh_token),))
     return Response(status_code=204)
+
+
+@router.post("/password-reset/request", response_model=MessageOut)
+def request_password_reset(body: PasswordResetRequestIn, conn: psycopg.Connection = Depends(get_conn)):
+    """Create a short-lived, single-use reset link without revealing whether the account exists."""
+    user = conn.execute(
+        "select id from profiles where email = %s and is_active = true for update",
+        (str(body.email).strip().lower(),),
+    ).fetchone()
+
+    if user is not None:
+        token, token_digest = new_password_reset_token()
+        settings = get_settings()
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.password_reset_ttl_minutes)
+        conn.execute(
+            "update password_reset_tokens set used_at = now() where user_id = %s and used_at is null",
+            (user["id"],),
+        )
+        conn.execute(
+            "insert into password_reset_tokens (user_id, token_hash, expires_at) values (%s, %s, %s)",
+            (user["id"], token_digest, expires_at),
+        )
+        reset_url = f"{settings.frontend_url.rstrip('/')}/reset-password?{urlencode({'token': token})}"
+        try:
+            send_password_reset_email(str(body.email), reset_url)
+        except (OSError, RuntimeError, smtplib.SMTPException) as exc:
+            raise HTTPException(503, "Unable to send the password reset email. Please try again later.") from exc
+
+    return {"message": "If an account exists for that email, a password reset link has been sent."}
+
+
+@router.post("/password-reset/confirm", response_model=MessageOut)
+def confirm_password_reset(body: PasswordResetConfirmIn, conn: psycopg.Connection = Depends(get_conn)):
+    """Consume a valid reset token, update the password, and revoke existing sessions."""
+    token_row = conn.execute(
+        """update password_reset_tokens
+           set used_at = now()
+           where token_hash = %s and used_at is null and expires_at > now()
+           returning user_id""",
+        (hash_token(body.token),),
+    ).fetchone()
+    if token_row is None:
+        raise HTTPException(400, "This password reset link is invalid or has expired.")
+
+    conn.execute(
+        "update profiles set password_hash = %s where id = %s",
+        (hash_password(body.new_password), token_row["user_id"]),
+    )
+    conn.execute(
+        "update password_reset_tokens set used_at = now() where user_id = %s and used_at is null",
+        (token_row["user_id"],),
+    )
+    conn.execute(
+        "update refresh_tokens set revoked_at = now() where user_id = %s and revoked_at is null",
+        (token_row["user_id"],),
+    )
+    return {"message": "Your password has been reset. Please sign in with your new password."}

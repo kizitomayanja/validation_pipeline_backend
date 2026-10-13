@@ -44,6 +44,19 @@ class RefreshIn(BaseModel):
     refresh_token: str = Field(max_length=512)
 
 
+class PasswordResetRequestIn(BaseModel):
+    email: EmailStr
+
+
+class PasswordResetConfirmIn(BaseModel):
+    token: str = Field(min_length=1, max_length=512)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+class MessageOut(BaseModel):
+    message: str
+
+
 class TokensOut(BaseModel):
     access_token: str
     refresh_token: str
@@ -72,6 +85,12 @@ class WorkOut(BaseModel):
     attempted: str
     difficulty: Literal["easy", "medium", "hard"]
     reward_ugx: int
+
+
+class DatasetProgressOut(BaseModel):
+    total_sentences: int
+    finished_sentences: int
+    completion_percentage: float
 
 
 class SubmitIn(BaseModel):

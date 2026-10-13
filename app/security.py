@@ -53,6 +53,12 @@ def new_refresh_token() -> tuple[str, str]:
     return token, hash_token(token)
 
 
+def new_password_reset_token() -> tuple[str, str]:
+    """Returns a password-reset token and the hash to store."""
+    token = secrets.token_urlsafe(48)
+    return token, hash_token(token)
+
+
 # --- tiny in-memory rate limiter for /auth/*. Per process: put a proxy/Redis limiter in front if you run several workers.
 _hits: dict[tuple[str, str], deque[float]] = defaultdict(deque)
 

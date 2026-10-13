@@ -14,6 +14,13 @@ class Settings(BaseSettings):
     claim_minutes: int = 15
     cors_origins: str = "http://localhost:5173"
     auth_rate_limit: int = 10
+    frontend_url: str = "http://localhost:5173"
+    password_reset_ttl_minutes: int = 30
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from_email: str | None = None
 
     @property
     def origins(self) -> list[str]:

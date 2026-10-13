@@ -4,11 +4,18 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from ..config import get_settings
 from ..db import get_conn
 from ..deps import current_user
-from ..schemas import SubmitIn, SubmitOut, WorkOut
+from ..schemas import DatasetProgressOut, SubmitIn, SubmitOut, WorkOut
 
 router = APIRouter(prefix="/work", tags=["work"])
 
 # Reward formula, single source of truth (see README): greatest(min_reward, round(cost * rate)).
+EFFECTIVE_COST_SQL = """case
+    when s.difficulty = 'hard'
+     and length(s.noisy_english) - length(replace(s.noisy_english, '.', '')) > 2
+    then least(s.cost * 2, 1)
+    else s.cost
+end"""
+
 NEXT_SQL = """
 with pick as (
   select s.id from sentences s
@@ -16,7 +23,7 @@ with pick as (
     and (s.claimed_by is null or s.claim_expires_at < now() or s.claimed_by = %(me)s)
     and not exists (select 1 from sentence_skips k where k.sentence_id = s.id and k.user_id = %(me)s)
   order by coalesce(s.claimed_by = %(me)s and s.claim_expires_at >= now(), false) desc,  -- resume my own open claim first
-           s.cost desc, s.id
+           {effective_cost} desc, s.id
   limit 1
   for update skip locked
 )
@@ -25,8 +32,26 @@ update sentences s
   from pick, reward_settings rs
  where s.id = pick.id
 returning s.id, s.noisy_english, s.attempted, s.difficulty,
-          greatest(rs.min_reward_ugx, round(s.cost * rs.rate_ugx))::int as reward_ugx
-"""
+          greatest(rs.min_reward_ugx, round(({effective_cost}) * rs.rate_ugx))::int as reward_ugx
+""".format(effective_cost=EFFECTIVE_COST_SQL)
+
+
+@router.get("/progress", response_model=DatasetProgressOut)
+def dataset_progress(conn: psycopg.Connection = Depends(get_conn)):
+    row = conn.execute(
+        """select count(*)::int as total_sentences,
+                  count(*) filter (where validated_by is not null)::int as finished_sentences,
+                  coalesce(
+                      round(
+                          100.0 * count(*) filter (where validated_by is not null)
+                          / nullif(count(*), 0),
+                          2
+                      ),
+                      0
+                  )::float8 as completion_percentage
+           from sentences"""
+    ).fetchone()
+    return row
 
 
 @router.get("/next", response_model=WorkOut, responses={204: {"description": "Nothing left to validate"}})
@@ -41,10 +66,11 @@ def submit(sentence_id: int, body: SubmitIn, user: dict = Depends(current_user),
     row = conn.execute(
         """update sentences s
               set clean_lug = %s, validated_by = %s, validated_at = now(), claimed_by = null, claim_expires_at = null,
-                  reward_ugx = greatest(rs.min_reward_ugx, round(s.cost * rs.rate_ugx))::int
+                    reward_ugx = greatest(rs.min_reward_ugx, round(({effective_cost}) * rs.rate_ugx))::int
              from reward_settings rs
             where s.id = %s and s.validated_by is null and s.claimed_by = %s
-        returning s.reward_ugx""", (body.clean_lug, user["id"], sentence_id, user["id"])).fetchone()
+        returning s.reward_ugx""".format(effective_cost=EFFECTIVE_COST_SQL),
+        (body.clean_lug, user["id"], sentence_id, user["id"])).fetchone()
     if row is None:
         raise HTTPException(409, "This sentence is no longer assigned to you. Load the next one.")
     return row
