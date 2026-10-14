@@ -78,6 +78,7 @@ def logout(body: RefreshIn, conn: psycopg.Connection = Depends(get_conn)):
     return Response(status_code=204)
 
 
+@router.post("/password-reset", response_model=MessageOut)
 @router.post("/password-reset/request", response_model=MessageOut)
 def request_password_reset(body: PasswordResetRequestIn, conn: psycopg.Connection = Depends(get_conn)):
     """Create a short-lived, single-use reset link without revealing whether the account exists."""

@@ -1,5 +1,6 @@
-# """Compatibility entrypoint for the packaged application."""
+"""Compatibility and Vercel serverless entrypoint for the application."""
 
-# from app.main import app
+from app.main import app
 
-# __all__ = ["app"]
+__all__ = ["app"]
+
