@@ -179,3 +179,77 @@ class MarkPaidIn(BaseModel):
 
 class RejectIn(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
+
+
+class SettingsOut(BaseModel):
+    rate_ugx: int
+    min_reward_ugx: int
+    min_cashout_ugx: int
+    max_budget_ugx: int | None = None
+    total_spent_ugx: int
+    remaining_budget_ugx: int | None = None
+    is_budget_exhausted: bool
+    updated_at: datetime
+
+
+class SettingsUpdateIn(BaseModel):
+    max_budget_ugx: int | None = None
+    rate_ugx: int | None = Field(default=None, gt=0)
+    min_reward_ugx: int | None = Field(default=None, ge=0)
+    min_cashout_ugx: int | None = Field(default=None, gt=0)
+
+
+class AdminOverviewOut(BaseModel):
+    total_sentences: int
+    validated_sentences: int
+    verified_sentences: int
+    unvalidated_sentences: int
+    completion_percentage: float
+    verified_percentage: float
+    max_budget_ugx: int | None = None
+    total_earned_ugx: int
+    pending_payouts_ugx: int
+    paid_out_ugx: int
+    remaining_budget_ugx: int | None = None
+    is_budget_exhausted: bool
+    total_users: int
+    validators_count: int
+    reviewers_count: int
+    admins_count: int
+
+
+class AdminUserOut(BaseModel):
+    id: uuid.UUID
+    email: str
+    full_name: str
+    role: Literal["validator", "reviewer", "admin"]
+    is_active: bool
+    created_at: datetime
+    validated_count: int
+    total_earned_ugx: int
+    pending_ugx: int
+    paid_out_ugx: int
+
+
+class AdminUserUpdateIn(BaseModel):
+    role: Literal["validator", "reviewer", "admin"] | None = None
+    is_active: bool | None = None
+
+
+class ReviewSentenceOut(BaseModel):
+    id: int
+    noisy_english: str
+    attempted: str
+    clean_lug: str
+    difficulty: Literal["easy", "medium", "hard"]
+    reward_ugx: int
+    validated_by_id: uuid.UUID
+    validator_name: str
+    validated_at: datetime
+    verified: bool
+
+
+class ReviewActionIn(BaseModel):
+    clean_lug: str | None = None
+    rejection_reason: str | None = None
+

@@ -362,3 +362,124 @@ def test_real_dataset_imports_and_serves(client):
     s = client.get("/work/next", headers=h).json()
     top = sql("select max(cost) from sentences", fetch=True)[0][0]
     assert s["reward_ugx"] == round(float(top) * 2000) and s["noisy_english"] and s["attempted"]
+
+
+# ------------------------------------------------------------------ admin budget & oversight & review
+def test_admin_settings_budget_control(client, admin):
+    # Default settings
+    st = client.get("/admin/settings", headers=admin).json()
+    assert st["rate_ugx"] == 2000
+    assert st["min_reward_ugx"] == 100
+    assert st["min_cashout_ugx"] == 1000
+    assert st["max_budget_ugx"] is None
+    assert st["total_spent_ugx"] == 0
+    assert st["is_budget_exhausted"] is False
+
+    # Validator cannot read or update admin settings
+    val_h, _ = make_user(client, "val@example.com")
+    assert client.get("/admin/settings", headers=val_h).status_code == 403
+    assert client.patch("/admin/settings", headers=val_h, json={"max_budget_ugx": 5000000}).status_code == 403
+
+    # Admin updates budget cap and rates
+    updated = client.patch(
+        "/admin/settings",
+        headers=admin,
+        json={"max_budget_ugx": 5000000, "rate_ugx": 2500, "min_cashout_ugx": 2000},
+    ).json()
+    assert updated["max_budget_ugx"] == 5000000
+    assert updated["rate_ugx"] == 2500
+    assert updated["min_cashout_ugx"] == 2000
+    assert updated["remaining_budget_ugx"] == 5000000
+
+
+def test_admin_overview_metrics(client, admin):
+    val_h, _ = make_user(client, "val2@example.com")
+    # Initial overview
+    ov = client.get("/admin/overview", headers=admin).json()
+    assert ov["total_sentences"] == 4
+    assert ov["validated_sentences"] == 0
+    assert ov["verified_sentences"] == 0
+    assert ov["completion_percentage"] == 0.0
+
+    # Validator validates a sentence
+    client.get("/work/next", headers=val_h)
+    client.post("/work/1/submit", headers=val_h, json={"clean_lug": "okutereeza 1"})
+
+    ov_after = client.get("/admin/overview", headers=admin).json()
+    assert ov_after["validated_sentences"] == 1
+    assert ov_after["unvalidated_sentences"] == 3
+    assert ov_after["completion_percentage"] == 25.0
+    assert ov_after["total_earned_ugx"] == 1800
+
+    # Non-admin rejected
+    assert client.get("/admin/overview", headers=val_h).status_code == 403
+
+
+def test_admin_user_oversight_and_role_management(client, admin):
+    val_h, _ = make_user(client, "val3@example.com", name="Val Three")
+    user_id = client.get("/me", headers=val_h).json()["id"]
+
+    # Admin lists users
+    users = client.get("/admin/users", headers=admin).json()
+    target = next((u for u in users if u["id"] == user_id), None)
+    assert target is not None
+    assert target["role"] == "validator"
+    assert target["is_active"] is True
+
+    # Admin promotes user to reviewer
+    promoted = client.patch(f"/admin/users/{user_id}", headers=admin, json={"role": "reviewer"}).json()
+    assert promoted["role"] == "reviewer"
+
+    # Promoted user now has reviewer access
+    rev_queue = client.get("/review/queue", headers=val_h)
+    assert rev_queue.status_code == 200
+
+    # Admin deactivates user
+    deactivated = client.patch(f"/admin/users/{user_id}", headers=admin, json={"is_active": False}).json()
+    assert deactivated["is_active"] is False
+
+    # Deactivated user is blocked from API
+    assert client.get("/me", headers=val_h).status_code == 401
+
+
+def test_review_pipeline_flow(client, admin):
+    val_h, _ = make_user(client, "val4@example.com")
+    s = client.get("/work/next", headers=val_h).json()
+    client.post(f"/work/{s['id']}/submit", headers=val_h, json={"clean_lug": "okulongoosa"})
+
+    # Regular validator cannot access review queue
+    assert client.get("/review/queue", headers=val_h).status_code == 403
+
+    # Admin (or reviewer) accesses review queue
+    queue = client.get("/review/queue", headers=admin).json()
+    assert len(queue) == 1
+    assert queue[0]["id"] == s["id"]
+    assert queue[0]["clean_lug"] == "okulongoosa"
+
+    # Test edit and approve
+    edited = client.post(
+        f"/review/{s['id']}/edit",
+        headers=admin,
+        json={"clean_lug": "okulongoosa obulungi"},
+    ).json()
+    assert edited["verified"] is True
+    assert edited["clean_lug"] == "okulongoosa obulungi"
+
+    # Queue is now clear
+    assert len(client.get("/review/queue", headers=admin).json()) == 0
+
+    # Submit second sentence and test reject
+    s2 = client.get("/work/next", headers=val_h).json()
+    client.post(f"/work/{s2['id']}/submit", headers=val_h, json={"clean_lug": "bad translation"})
+
+    queue2 = client.get("/review/queue", headers=admin).json()
+    assert len(queue2) == 1
+    assert queue2[0]["id"] == s2["id"]
+
+    # Reject sentence
+    rej = client.post(f"/review/{s2['id']}/reject", headers=admin, json={"rejection_reason": "Inaccurate"})
+    assert rej.status_code == 204
+
+    # Sentence is cleared and ready to be re-served
+    row = sql("select clean_lug, validated_by, verified from sentences where id = %s", (s2["id"],), fetch=True)[0]
+    assert row == (None, None, False)
