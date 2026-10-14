@@ -1,5 +1,6 @@
 import uuid
 import smtplib
+import traceback
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
@@ -78,6 +79,7 @@ def logout(body: RefreshIn, conn: psycopg.Connection = Depends(get_conn)):
     return Response(status_code=204)
 
 
+@router.post("/password-reset", response_model=MessageOut)
 @router.post("/password-reset/request", response_model=MessageOut)
 def request_password_reset(body: PasswordResetRequestIn, conn: psycopg.Connection = Depends(get_conn)):
     """Create a short-lived, single-use reset link without revealing whether the account exists."""
@@ -101,8 +103,10 @@ def request_password_reset(body: PasswordResetRequestIn, conn: psycopg.Connectio
         reset_url = f"{settings.frontend_url.rstrip('/')}/reset-password?{urlencode({'token': token})}"
         try:
             send_password_reset_email(str(body.email), reset_url)
-        except (OSError, RuntimeError, smtplib.SMTPException) as exc:
-            raise HTTPException(503, "Unable to send the password reset email. Please try again later.") from exc
+        except Exception as exc:
+            error_string = traceback.format_exc()
+            print(error_string, flush=True)
+            print(f"[email error] Exception during email dispatch for {body.email}: {exc}", flush=True)
 
     return {"message": "If an account exists for that email, a password reset link has been sent."}
 

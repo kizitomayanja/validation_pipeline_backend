@@ -4,7 +4,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from .conftest import ROOT, URI, make_user, sql
+from conftest import ROOT, URI, make_user, sql
 
 
 def add_method(client, h, phone="0772 123456", name="Ann N. Validator", provider="mtn"):
@@ -63,14 +63,20 @@ def test_logout_revokes_session_and_deactivated_users_are_locked_out(client):
     assert client.post("/auth/login", json={"email": "a@example.com", "password": "correct horse"}).status_code == 403
 
 
-def test_password_reset_email_and_single_use_token(client, capsys):
+def test_password_reset_email_and_single_use_token(client, capsys, monkeypatch):
     _, tokens = make_user(client)
+    sent = []
+
+    def capture_email(recipient, reset_url):
+        sent.append((recipient, reset_url))
+
+    monkeypatch.setattr("app.routers.auth.send_password_reset_email", capture_email)
     request = client.post("/auth/password-reset/request", json={"email": "a@example.com"})
     assert request.status_code == 200
     assert request.json()["message"] == "If an account exists for that email, a password reset link has been sent."
-    output = capsys.readouterr().out
-    assert "To: a@example.com" in output
-    reset_url = next(line for line in output.splitlines() if "token=" in line)
+    assert capsys.readouterr().out == ""
+    assert sent[0][0] == "a@example.com"
+    reset_url = sent[0][1]
     reset_token = parse_qs(urlparse(reset_url).query)["token"][0]
 
     assert client.post(
@@ -101,11 +107,12 @@ def test_password_reset_request_does_not_reveal_unknown_email(client, capsys):
 
 # ------------------------------------------------------------------ work
 def test_dataset_progress_reports_finished_sentence_percentage(client):
-    assert client.get("/work/progress").json() == {
-        "total_sentences": 4,
-        "finished_sentences": 0,
-        "completion_percentage": 0.0,
-    }
+    progress = client.get("/work/progress").json()
+    assert progress["total_sentences"] == 4
+    assert progress["finished_sentences"] == 0
+    assert progress["completion_percentage"] == 0.0
+    assert progress["max_budget_ugx"] is None
+    assert progress["is_budget_exhausted"] is False
     h, _ = make_user(client)
     for sentence_id in (1, 2, 3):
         client.get("/work/next", headers=h)
@@ -115,11 +122,11 @@ def test_dataset_progress_reports_finished_sentence_percentage(client):
             json={"clean_lug": "ok"},
         )
         assert response.status_code == 200
-    assert client.get("/work/progress").json() == {
-        "total_sentences": 4,
-        "finished_sentences": 3,
-        "completion_percentage": 0.03,
-    }
+    progress_after = client.get("/work/progress").json()
+    assert progress_after["total_sentences"] == 4
+    assert progress_after["finished_sentences"] == 3
+    assert progress_after["completion_percentage"] == 0.03
+    assert progress_after["spent_budget_ugx"] > 0
     finished = client.get("/work/finished", headers=h)
     assert finished.status_code == 200
     assert [sentence["id"] for sentence in finished.json()] == [1, 2, 3]
@@ -142,11 +149,12 @@ def test_hard_sentence_with_more_than_two_full_stops_has_doubled_cost(client):
         json={"clean_lug": "ok"},
     )
     assert submitted.json()["reward_ugx"] == 1600
-    assert sql("select cost from sentences where id = 1", fetch=True)[0][0] == 0.4
+    assert float(sql("select cost from sentences where id = 1", fetch=True)[0][0]) == 0.4
 
 
 def test_hard_sentence_with_two_full_stops_keeps_original_cost(client):
     h, _ = make_user(client)
+    sql("update sentences set cost = 0.1 where id != 1")
     sql("update sentences set noisy_english = 'First. Second.', cost = 0.4 where id = 1")
     sentence = client.get("/work/next", headers=h).json()
     assert sentence["id"] == 1
@@ -306,6 +314,43 @@ def test_concurrent_next_gives_each_validator_a_different_sentence(client):
 
 
 # ------------------------------------------------------------------ real dataset
+def test_password_reset_alias_endpoint(client):
+    _, _ = make_user(client, "alias@example.com")
+    res = client.post("/auth/password-reset", json={"email": "alias@example.com"})
+    assert res.status_code == 200
+    assert "password reset link has been sent" in res.json()["message"]
+
+
+def test_submitting_identical_attempt_requires_confirmation(client):
+    h, _ = make_user(client)
+    s = client.get("/work/next", headers=h).json()
+    # Submitting identical text without confirmation fails with 422
+    fail = client.post(f"/work/{s['id']}/submit", headers=h, json={"clean_lug": s["attempted"]})
+    assert fail.status_code == 422
+    assert "identical to the AI attempt" in fail.json()["detail"]
+
+    # Submitting with confirmation succeeds
+    ok = client.post(f"/work/{s['id']}/submit", headers=h, json={"clean_lug": s["attempted"], "confirmed_unchanged": True})
+    assert ok.status_code == 200
+
+
+def test_budget_cap_exhaustion_stops_new_claims(client):
+    h, _ = make_user(client)
+    s = client.get("/work/next", headers=h).json()
+    sql(f"update reward_settings set max_budget_ugx = {s['reward_ugx']}")
+    # User can finish their current active claim
+    res = client.post(f"/work/{s['id']}/submit", headers=h, json={"clean_lug": "translated sentence"})
+    assert res.status_code == 200
+
+    # Next attempt should return 204 because max_budget_ugx has been reached
+    next_res = client.get("/work/next", headers=h)
+    assert next_res.status_code == 204
+
+    progress = client.get("/work/progress").json()
+    assert progress["is_budget_exhausted"] is True
+    assert progress["remaining_budget_ugx"] == 0
+
+
 CSV = ROOT / "output" / "sentences_for_supabase.csv"
 
 
@@ -323,3 +368,139 @@ def test_real_dataset_imports_and_serves(client):
     s = client.get("/work/next", headers=h).json()
     top = sql("select max(cost) from sentences", fetch=True)[0][0]
     assert s["reward_ugx"] == round(float(top) * 2000) and s["noisy_english"] and s["attempted"]
+
+
+# ------------------------------------------------------------------ admin budget & oversight & review
+def test_admin_settings_budget_control(client, admin):
+    # Default settings
+    st = client.get("/admin/settings", headers=admin).json()
+    assert st["rate_ugx"] == 2000
+    assert st["min_reward_ugx"] == 100
+    assert st["min_cashout_ugx"] == 1000
+    assert st["max_budget_ugx"] is None
+    assert st["total_spent_ugx"] == 0
+    assert st["is_budget_exhausted"] is False
+
+    # Validator cannot read or update admin settings
+    val_h, _ = make_user(client, "val@example.com")
+    assert client.get("/admin/settings", headers=val_h).status_code == 403
+    assert client.patch("/admin/settings", headers=val_h, json={"max_budget_ugx": 5000000}).status_code == 403
+
+    # Admin updates budget cap and rates
+    updated = client.patch(
+        "/admin/settings",
+        headers=admin,
+        json={"max_budget_ugx": 5000000, "rate_ugx": 2500, "min_cashout_ugx": 2000},
+    ).json()
+    assert updated["max_budget_ugx"] == 5000000
+    assert updated["rate_ugx"] == 2500
+    assert updated["min_cashout_ugx"] == 2000
+    assert updated["remaining_budget_ugx"] == 5000000
+
+
+def test_admin_overview_metrics(client, admin):
+    val_h, _ = make_user(client, "val2@example.com")
+    # Initial overview
+    ov = client.get("/admin/overview", headers=admin).json()
+    assert ov["total_sentences"] == 4
+    assert ov["validated_sentences"] == 0
+    assert ov["verified_sentences"] == 0
+    assert ov["completion_percentage"] == 0.0
+
+    # Validator validates a sentence
+    client.get("/work/next", headers=val_h)
+    client.post("/work/1/submit", headers=val_h, json={"clean_lug": "okutereeza 1"})
+
+    ov_after = client.get("/admin/overview", headers=admin).json()
+    assert ov_after["validated_sentences"] == 1
+    assert ov_after["unvalidated_sentences"] == 3
+    assert ov_after["completion_percentage"] == 25.0
+    assert ov_after["total_earned_ugx"] == 1800
+
+    # Non-admin rejected
+    assert client.get("/admin/overview", headers=val_h).status_code == 403
+
+
+def test_admin_user_oversight_and_role_management(client, admin):
+    val_h, _ = make_user(client, "val3@example.com", name="Val Three")
+    user_id = client.get("/me", headers=val_h).json()["id"]
+
+    # Admin lists users
+    users = client.get("/admin/users", headers=admin).json()
+    target = next((u for u in users if u["id"] == user_id), None)
+    assert target is not None
+    assert target["role"] == "validator"
+    assert target["is_active"] is True
+
+    # Admin promotes user to reviewer
+    promoted = client.patch(f"/admin/users/{user_id}", headers=admin, json={"role": "reviewer"}).json()
+    assert promoted["role"] == "reviewer"
+
+    # Promoted user now has reviewer access
+    rev_queue = client.get("/review/queue", headers=val_h)
+    assert rev_queue.status_code == 200
+
+    # Admin deactivates user
+    deactivated = client.patch(f"/admin/users/{user_id}", headers=admin, json={"is_active": False}).json()
+    assert deactivated["is_active"] is False
+
+    # Deactivated user is blocked from API
+    assert client.get("/me", headers=val_h).status_code == 401
+
+
+def test_review_pipeline_flow(client, admin):
+    val_h, _ = make_user(client, "val4@example.com")
+    s = client.get("/work/next", headers=val_h).json()
+    client.post(f"/work/{s['id']}/submit", headers=val_h, json={"clean_lug": "okulongoosa"})
+
+    # Regular validator cannot access review queue
+    assert client.get("/review/queue", headers=val_h).status_code == 403
+
+    # Admin (or reviewer) accesses review queue
+    queue = client.get("/review/queue", headers=admin).json()
+    assert len(queue) == 1
+    assert queue[0]["id"] == s["id"]
+    assert queue[0]["clean_lug"] == "okulongoosa"
+
+    # Test edit and approve
+    edited = client.post(
+        f"/review/{s['id']}/edit",
+        headers=admin,
+        json={"clean_lug": "okulongoosa obulungi"},
+    ).json()
+    assert edited["verified"] is True
+    assert edited["clean_lug"] == "okulongoosa obulungi"
+
+    # Queue is now clear
+    assert len(client.get("/review/queue", headers=admin).json()) == 0
+
+    # Submit second sentence and test reject
+    s2 = client.get("/work/next", headers=val_h).json()
+    client.post(f"/work/{s2['id']}/submit", headers=val_h, json={"clean_lug": "bad translation"})
+
+    queue2 = client.get("/review/queue", headers=admin).json()
+    assert len(queue2) == 1
+    assert queue2[0]["id"] == s2["id"]
+
+    # Reject sentence
+    rej = client.post(f"/review/{s2['id']}/reject", headers=admin, json={"rejection_reason": "Inaccurate"})
+    assert rej.status_code == 204
+
+    # Sentence is cleared and ready to be re-served
+    row = sql("select clean_lug, validated_by, verified from sentences where id = %s", (s2["id"],), fetch=True)[0]
+    assert row == (None, None, False)
+
+
+def test_password_reset_handles_mailer_failure_gracefully_without_503(client, monkeypatch):
+    from unittest.mock import MagicMock
+    import app.routers.auth as auth_module
+
+    _, _ = make_user(client, 'mailerfail@example.com')
+    monkeypatch.setattr(auth_module, 'send_password_reset_email', MagicMock(side_effect=OSError('Connection refused to mail server')))
+
+    res = client.post('/auth/password-reset', json={'email': 'mailerfail@example.com'})
+    assert res.status_code == 200
+    assert 'password reset link has been sent' in res.json()['message']
+
+    tokens = sql('select id, user_id from password_reset_tokens where used_at is null', fetch=True)
+    assert len(tokens) > 0

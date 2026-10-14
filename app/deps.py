@@ -28,3 +28,10 @@ def admin_user(user: dict = Depends(current_user)) -> dict:
     if user["role"] != "admin":
         raise HTTPException(403, "Admins only.")
     return user
+
+
+def reviewer_user(user: dict = Depends(current_user)) -> dict:
+    if user["role"] not in ("reviewer", "admin"):
+        raise HTTPException(403, "Reviewers and admins only.")
+    return user
+

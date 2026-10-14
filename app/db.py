@@ -1,3 +1,4 @@
+import os
 from collections.abc import Iterator
 
 import psycopg
@@ -8,7 +9,10 @@ from psycopg_pool import ConnectionPool
 
 def make_pool(url: str) -> ConnectionPool:
     # prepare_threshold=None: safe behind Supabase's transaction pooler (pgbouncer), which can't keep prepared statements.
-    return ConnectionPool(url, min_size=1, max_size=10, open=False,
+    # Safe defaults for serverless (Vercel): min 1, max 3 to prevent exhausting Supabase connections.
+    min_size = int(os.getenv("DB_POOL_MIN", "1"))
+    max_size = int(os.getenv("DB_POOL_MAX", "3"))
+    return ConnectionPool(url, min_size=min_size, max_size=max_size, open=False,
                           kwargs={"row_factory": dict_row, "prepare_threshold": None})
 
 

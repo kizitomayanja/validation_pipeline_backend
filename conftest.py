@@ -4,17 +4,25 @@ import os
 import pathlib
 import tempfile
 
-import pgserver
 import psycopg
 import pytest
 
-ROOT = pathlib.Path(__file__).resolve().parents[2]
-_server = pgserver.get_server(pathlib.Path(tempfile.mkdtemp()) / "pg", cleanup_mode="stop")
-URI = _server.get_uri()
+ROOT = pathlib.Path(__file__).resolve().parent
+URI = os.getenv("DATABASE_URL")
+if not URI:
+    try:
+        import pgserver
+        _server = pgserver.get_server(pathlib.Path(tempfile.mkdtemp()) / "pg", cleanup_mode="stop")
+        URI = _server.get_uri()
+    except (ImportError, Exception):
+        URI = "postgresql://ekyama:ekyama_password@localhost:5432/ekyama_test"
+
 os.environ.update(DATABASE_URL=URI, JWT_SECRET="test-secret-test-secret-test-secret-123", AUTH_RATE_LIMIT="1000")
 
 with psycopg.connect(URI, autocommit=True) as c:
-    c.execute((ROOT / "schema.sql").read_text())
+    exists = c.execute("select exists (select from information_schema.tables where table_name = 'profiles')").fetchone()[0]
+    if not exists:
+        c.execute((ROOT / "schema.sql").read_text())
 
 SEED = [  # (noisy_english, attempted, cost, difficulty) -> rewards with rate 2000 / min 100: 1800, 1000, 100, 100
     ("Do you have shortness of breath?", "attempt 1", 0.9, "hard"),
@@ -33,7 +41,7 @@ def sql(query, params=None, fetch=False):
 @pytest.fixture(autouse=True)
 def fresh_db():
     sql("truncate sentence_skips, sentences, payouts, payment_methods, refresh_tokens, profiles restart identity cascade")
-    sql("update reward_settings set rate_ugx = 2000, min_reward_ugx = 100, min_cashout_ugx = 1000")
+    sql("update reward_settings set rate_ugx = 2000, min_reward_ugx = 100, min_cashout_ugx = 1000, max_budget_ugx = null")
     for i, (en, lug, cost, diff) in enumerate(SEED, 1):
         sql("insert into sentences (source_row, noisy_english, attempted, length_words, cost_raw, cost, difficulty_score, difficulty) "
             "values (%s,%s,%s,5,%s,%s,%s,%s)", (i, en, lug, cost, cost, cost, diff))
