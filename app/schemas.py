@@ -10,15 +10,15 @@ PayoutStatus = Literal["pending", "paid", "rejected", "cancelled"]
 
 
 def normalise_phone(v: str) -> str:
-    """07XXXXXXXX, 2567XXXXXXXX or +2567XXXXXXXX -> +256XXXXXXXXX (matches the DB check constraint)."""
+    """07XXXXXXXX, 2567XXXXXXXX or +2567XXXXXXXX -> +256XXXXXXXXX (Ugandan mobile numbers)."""
     d = re.sub(r"[\s-]", "", v)
-    if re.fullmatch(r"\+256\d{9}", d):
+    if re.fullmatch(r"\+2567\d{8}", d):
         return d
-    if re.fullmatch(r"256\d{9}", d):
+    if re.fullmatch(r"2567\d{8}", d):
         return "+" + d
-    if re.fullmatch(r"0\d{9}", d):
+    if re.fullmatch(r"07\d{8}", d):
         return "+256" + d[1:]
-    raise ValueError("Enter a Ugandan number, like 0772 123456.")
+    raise ValueError("Enter a valid Ugandan mobile number, like 0772 123456 or 0701 234567.")
 
 
 class RegisterIn(BaseModel):
@@ -91,6 +91,10 @@ class DatasetProgressOut(BaseModel):
     total_sentences: int
     finished_sentences: int
     completion_percentage: float
+    max_budget_ugx: int | None = None
+    spent_budget_ugx: int = 0
+    remaining_budget_ugx: int | None = None
+    is_budget_exhausted: bool = False
 
 
 class FinishedSentenceOut(BaseModel):
@@ -103,6 +107,7 @@ class FinishedSentenceOut(BaseModel):
 
 class SubmitIn(BaseModel):
     clean_lug: str = Field(max_length=2000)
+    confirmed_unchanged: bool = False
 
     @field_validator("clean_lug")
     @classmethod

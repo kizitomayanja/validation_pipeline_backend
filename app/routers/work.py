@@ -38,6 +38,16 @@ returning s.id, s.noisy_english, s.attempted, s.difficulty,
 """.format(effective_cost=EFFECTIVE_COST_SQL)
 
 
+def _is_budget_exhausted(conn: psycopg.Connection) -> bool:
+    rs = conn.execute("select max_budget_ugx from reward_settings").fetchone()
+    if not rs or rs["max_budget_ugx"] is None:
+        return False
+    spent = conn.execute(
+        "select coalesce(sum(reward_ugx), 0)::int as spent from sentences where validated_by is not null"
+    ).fetchone()["spent"]
+    return spent >= rs["max_budget_ugx"]
+
+
 @router.get("/progress", response_model=DatasetProgressOut)
 def dataset_progress(conn: psycopg.Connection = Depends(get_conn)):
     row = conn.execute(
@@ -53,7 +63,19 @@ def dataset_progress(conn: psycopg.Connection = Depends(get_conn)):
                   )::float8 as completion_percentage
            from sentences""".format(target=VALIDATION_TARGET)
     ).fetchone()
-    return row
+    rs = conn.execute("select max_budget_ugx from reward_settings").fetchone()
+    max_budget = rs["max_budget_ugx"] if rs else None
+    spent_row = conn.execute("select coalesce(sum(reward_ugx), 0)::int as spent from sentences where validated_by is not null").fetchone()
+    spent = spent_row["spent"] if spent_row else 0
+    remaining = max(0, max_budget - spent) if max_budget is not None else None
+    is_exhausted = (max_budget is not None) and (spent >= max_budget)
+    return {
+        **row,
+        "max_budget_ugx": max_budget,
+        "spent_budget_ugx": spent,
+        "remaining_budget_ugx": remaining,
+        "is_budget_exhausted": is_exhausted,
+    }
 
 
 @router.get("/finished", response_model=list[FinishedSentenceOut])
@@ -66,14 +88,35 @@ def finished_sentences(user: dict = Depends(current_user), conn: psycopg.Connect
     ).fetchall()
 
 
-@router.get("/next", response_model=WorkOut, responses={204: {"description": "Nothing left to validate"}})
+@router.get("/next", response_model=WorkOut, responses={204: {"description": "Nothing left to validate or budget reached"}})
 def next_sentence(user: dict = Depends(current_user), conn: psycopg.Connection = Depends(get_conn)):
+    # If budget is exhausted, allow completing only an active claim already held by the user
+    has_active_claim = conn.execute(
+        "select 1 from sentences where claimed_by = %s and claim_expires_at >= now() and validated_by is null limit 1",
+        (user["id"],)
+    ).fetchone()
+    if not has_active_claim and _is_budget_exhausted(conn):
+        return Response(status_code=204)
+
     row = conn.execute(NEXT_SQL, {"me": user["id"], "mins": get_settings().claim_minutes}).fetchone()
     return row if row else Response(status_code=204)
 
 
 @router.post("/{sentence_id}/submit", response_model=SubmitOut)
 def submit(sentence_id: int, body: SubmitIn, user: dict = Depends(current_user), conn: psycopg.Connection = Depends(get_conn)):
+    # Check claim ownership and detect unchanged AI output
+    existing = conn.execute(
+        "select attempted from sentences where id = %s and claimed_by = %s and validated_by is null",
+        (sentence_id, user["id"])
+    ).fetchone()
+    if existing is None:
+        raise HTTPException(409, "This sentence is no longer assigned to you. Load the next one.")
+    if existing["attempted"].strip() == body.clean_lug.strip() and not body.confirmed_unchanged:
+        raise HTTPException(
+            422,
+            "The translation is identical to the AI attempt. If the AI was completely accurate, confirm unchanged, or fix any translation errors."
+        )
+
     # The reward is computed here from reward_settings, never taken from the client.
     row = conn.execute(
         """update sentences s

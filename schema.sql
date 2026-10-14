@@ -57,6 +57,7 @@ create table reward_settings (
   rate_ugx        integer not null default 2000 check (rate_ugx > 0),   -- UGX paid for a sentence with cost = 1.0
   min_reward_ugx  integer not null default 100  check (min_reward_ugx >= 0),
   min_cashout_ugx integer not null default 5000 check (min_cashout_ugx > 0),
+  max_budget_ugx  integer check (max_budget_ugx is null or max_budget_ugx > 0), -- Total campaign payout budget cap in UGX (null = unlimited)
   updated_at      timestamptz not null default now()
 );
 insert into reward_settings default values;
@@ -139,3 +140,15 @@ from profiles p
 left join sentences s  on s.validated_by = p.id
 left join payouts   po on po.id = s.payout_id
 group by p.id;
+
+-- Security: Enable Row Level Security (RLS) on all tables with no policies.
+-- Because FastAPI connects directly via a server-side connection, RLS blocks direct client queries via Supabase PostgREST Data API.
+alter table profiles enable row level security;
+alter table refresh_tokens enable row level security;
+alter table password_reset_tokens enable row level security;
+alter table payment_methods enable row level security;
+alter table reward_settings enable row level security;
+alter table payouts enable row level security;
+alter table sentences enable row level security;
+alter table sentence_skips enable row level security;
+
