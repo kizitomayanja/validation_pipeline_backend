@@ -6,7 +6,7 @@ from .config import get_settings
 
 
 def send_password_reset_email(recipient: str, reset_url: str) -> None:
-    """Send via configured SMTP, and always print the message for local debugging."""
+    """Send a password reset link via configured SMTP."""
     message = EmailMessage()
     message["Subject"] = "Reset your Ekyama password"
     message["To"] = recipient
@@ -14,11 +14,6 @@ def send_password_reset_email(recipient: str, reset_url: str) -> None:
         "We received a request to reset your password. "
         f"Use this link to reset your password:\n\n{reset_url}\n\n"
         "If you did not request this, you can ignore this email."
-    )
-
-    print(
-        f"[email debug]\nTo: {recipient}\nSubject: {message['Subject']}\n\n{message.get_content()}",
-        flush=True,
     )
 
     settings = get_settings()

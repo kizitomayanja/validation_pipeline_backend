@@ -63,14 +63,20 @@ def test_logout_revokes_session_and_deactivated_users_are_locked_out(client):
     assert client.post("/auth/login", json={"email": "a@example.com", "password": "correct horse"}).status_code == 403
 
 
-def test_password_reset_email_and_single_use_token(client, capsys):
+def test_password_reset_email_and_single_use_token(client, capsys, monkeypatch):
     _, tokens = make_user(client)
+    sent = []
+
+    def capture_email(recipient, reset_url):
+        sent.append((recipient, reset_url))
+
+    monkeypatch.setattr("app.routers.auth.send_password_reset_email", capture_email)
     request = client.post("/auth/password-reset/request", json={"email": "a@example.com"})
     assert request.status_code == 200
     assert request.json()["message"] == "If an account exists for that email, a password reset link has been sent."
-    output = capsys.readouterr().out
-    assert "To: a@example.com" in output
-    reset_url = next(line for line in output.splitlines() if "token=" in line)
+    assert capsys.readouterr().out == ""
+    assert sent[0][0] == "a@example.com"
+    reset_url = sent[0][1]
     reset_token = parse_qs(urlparse(reset_url).query)["token"][0]
 
     assert client.post(

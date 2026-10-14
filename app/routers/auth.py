@@ -1,5 +1,6 @@
 import uuid
 import smtplib
+import traceback
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
@@ -103,6 +104,8 @@ def request_password_reset(body: PasswordResetRequestIn, conn: psycopg.Connectio
         try:
             send_password_reset_email(str(body.email), reset_url)
         except (OSError, RuntimeError, smtplib.SMTPException) as exc:
+            print(f"[email error] failed to send password reset email to {body.email}: {exc}", flush=True)
+            traceback.print_exc()
             raise HTTPException(503, "Unable to send the password reset email. Please try again later.") from exc
 
     return {"message": "If an account exists for that email, a password reset link has been sent."}

@@ -45,7 +45,7 @@ Use `/docs` (log in via "Authorize" with an admin access token) until an admin s
 and updates the password. Responses to reset requests do not disclose whether an account exists. Password reset tokens expire
 after 30 minutes by default and are stored as hashes. Set `FRONTEND_URL` to the portal origin. To send real mail, configure
 `SMTP_HOST`, `SMTP_PORT` (STARTTLS, default 587), and `SMTP_FROM_EMAIL`; SMTP authentication can be enabled with both
-`SMTP_USERNAME` and `SMTP_PASSWORD`. The full outgoing message, including its link, is also printed to the API console for debugging.
+`SMTP_USERNAME` and `SMTP_PASSWORD`. Reset links are not written to application logs.
 For an existing database, apply the `password_reset_tokens` table and index DDL from `schema.sql` before deploying this version.
 
 ## Tests
