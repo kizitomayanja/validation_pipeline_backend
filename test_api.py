@@ -483,3 +483,18 @@ def test_review_pipeline_flow(client, admin):
     # Sentence is cleared and ready to be re-served
     row = sql("select clean_lug, validated_by, verified from sentences where id = %s", (s2["id"],), fetch=True)[0]
     assert row == (None, None, False)
+
+
+def test_password_reset_handles_mailer_failure_gracefully_without_503(client, monkeypatch):
+    from unittest.mock import MagicMock
+    import app.routers.auth as auth_module
+
+    _, _ = make_user(client, 'mailerfail@example.com')
+    monkeypatch.setattr(auth_module, 'send_password_reset_email', MagicMock(side_effect=OSError('Connection refused to mail server')))
+
+    res = client.post('/auth/password-reset', json={'email': 'mailerfail@example.com'})
+    assert res.status_code == 200
+    assert 'password reset link has been sent' in res.json()['message']
+
+    tokens = sql('select id, user_id from password_reset_tokens where used_at is null', fetch=True)
+    assert len(tokens) > 0

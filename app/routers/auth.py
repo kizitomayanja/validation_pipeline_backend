@@ -102,8 +102,8 @@ def request_password_reset(body: PasswordResetRequestIn, conn: psycopg.Connectio
         reset_url = f"{settings.frontend_url.rstrip('/')}/reset-password?{urlencode({'token': token})}"
         try:
             send_password_reset_email(str(body.email), reset_url)
-        except (OSError, RuntimeError, smtplib.SMTPException) as exc:
-            raise HTTPException(503, "Unable to send the password reset email. Please try again later.") from exc
+        except Exception as exc:
+            print(f"[email error] Exception during email dispatch for {body.email}: {exc}", flush=True)
 
     return {"message": "If an account exists for that email, a password reset link has been sent."}
 
