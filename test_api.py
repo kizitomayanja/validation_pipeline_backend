@@ -4,7 +4,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from .conftest import ROOT, URI, make_user, sql
+from conftest import ROOT, URI, make_user, sql
 
 
 def add_method(client, h, phone="0772 123456", name="Ann N. Validator", provider="mtn"):
@@ -101,11 +101,12 @@ def test_password_reset_request_does_not_reveal_unknown_email(client, capsys):
 
 # ------------------------------------------------------------------ work
 def test_dataset_progress_reports_finished_sentence_percentage(client):
-    assert client.get("/work/progress").json() == {
-        "total_sentences": 4,
-        "finished_sentences": 0,
-        "completion_percentage": 0.0,
-    }
+    progress = client.get("/work/progress").json()
+    assert progress["total_sentences"] == 4
+    assert progress["finished_sentences"] == 0
+    assert progress["completion_percentage"] == 0.0
+    assert progress["max_budget_ugx"] is None
+    assert progress["is_budget_exhausted"] is False
     h, _ = make_user(client)
     for sentence_id in (1, 2, 3):
         client.get("/work/next", headers=h)
@@ -115,11 +116,11 @@ def test_dataset_progress_reports_finished_sentence_percentage(client):
             json={"clean_lug": "ok"},
         )
         assert response.status_code == 200
-    assert client.get("/work/progress").json() == {
-        "total_sentences": 4,
-        "finished_sentences": 3,
-        "completion_percentage": 0.03,
-    }
+    progress_after = client.get("/work/progress").json()
+    assert progress_after["total_sentences"] == 4
+    assert progress_after["finished_sentences"] == 3
+    assert progress_after["completion_percentage"] == 0.03
+    assert progress_after["spent_budget_ugx"] > 0
     finished = client.get("/work/finished", headers=h)
     assert finished.status_code == 200
     assert [sentence["id"] for sentence in finished.json()] == [1, 2, 3]
@@ -142,11 +143,12 @@ def test_hard_sentence_with_more_than_two_full_stops_has_doubled_cost(client):
         json={"clean_lug": "ok"},
     )
     assert submitted.json()["reward_ugx"] == 1600
-    assert sql("select cost from sentences where id = 1", fetch=True)[0][0] == 0.4
+    assert float(sql("select cost from sentences where id = 1", fetch=True)[0][0]) == 0.4
 
 
 def test_hard_sentence_with_two_full_stops_keeps_original_cost(client):
     h, _ = make_user(client)
+    sql("update sentences set cost = 0.1 where id != 1")
     sql("update sentences set noisy_english = 'First. Second.', cost = 0.4 where id = 1")
     sentence = client.get("/work/next", headers=h).json()
     assert sentence["id"] == 1
@@ -306,6 +308,43 @@ def test_concurrent_next_gives_each_validator_a_different_sentence(client):
 
 
 # ------------------------------------------------------------------ real dataset
+def test_password_reset_alias_endpoint(client):
+    _, _ = make_user(client, "alias@example.com")
+    res = client.post("/auth/password-reset", json={"email": "alias@example.com"})
+    assert res.status_code == 200
+    assert "password reset link has been sent" in res.json()["message"]
+
+
+def test_submitting_identical_attempt_requires_confirmation(client):
+    h, _ = make_user(client)
+    s = client.get("/work/next", headers=h).json()
+    # Submitting identical text without confirmation fails with 422
+    fail = client.post(f"/work/{s['id']}/submit", headers=h, json={"clean_lug": s["attempted"]})
+    assert fail.status_code == 422
+    assert "identical to the AI attempt" in fail.json()["detail"]
+
+    # Submitting with confirmation succeeds
+    ok = client.post(f"/work/{s['id']}/submit", headers=h, json={"clean_lug": s["attempted"], "confirmed_unchanged": True})
+    assert ok.status_code == 200
+
+
+def test_budget_cap_exhaustion_stops_new_claims(client):
+    h, _ = make_user(client)
+    s = client.get("/work/next", headers=h).json()
+    sql(f"update reward_settings set max_budget_ugx = {s['reward_ugx']}")
+    # User can finish their current active claim
+    res = client.post(f"/work/{s['id']}/submit", headers=h, json={"clean_lug": "translated sentence"})
+    assert res.status_code == 200
+
+    # Next attempt should return 204 because max_budget_ugx has been reached
+    next_res = client.get("/work/next", headers=h)
+    assert next_res.status_code == 204
+
+    progress = client.get("/work/progress").json()
+    assert progress["is_budget_exhausted"] is True
+    assert progress["remaining_budget_ugx"] == 0
+
+
 CSV = ROOT / "output" / "sentences_for_supabase.csv"
 
 
