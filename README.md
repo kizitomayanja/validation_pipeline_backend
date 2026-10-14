@@ -43,9 +43,10 @@ Use `/docs` (log in via "Authorize" with an admin access token) until an admin s
 `/reset-password` page. The frontend should read the `token` query parameter and submit it to
 `POST /auth/password-reset/confirm {"token":"<link token>","new_password":"..."}` to consume the link
 and updates the password. Responses to reset requests do not disclose whether an account exists. Password reset tokens expire
-after 30 minutes by default and are stored as hashes. Set `FRONTEND_URL` to the portal origin. To send real mail, configure
-`SMTP_HOST`, `SMTP_PORT` (STARTTLS, default 587), and `SMTP_FROM_EMAIL`; SMTP authentication can be enabled with both
-`SMTP_USERNAME` and `SMTP_PASSWORD`. Reset links are not written to application logs.
+after 30 minutes by default and are stored as hashes. Set `FRONTEND_URL` to the portal origin. To send real mail on Vercel/serverless,
+configure `RESEND_API_KEY` (and optionally `RESEND_FROM_EMAIL`). Alternatively, configure standard SMTP with `SMTP_HOST`,
+`SMTP_PORT` (587 STARTTLS or 465 SSL), `SMTP_FROM_EMAIL`, and credentials `SMTP_USERNAME` and `SMTP_PASSWORD`. The full outgoing
+message, including its link, is always printed to the server logs (`[email debug]`) for zero-configuration testing and debugging.
 For an existing database, apply the `password_reset_tokens` table and index DDL from `schema.sql` before deploying this version.
 
 ## Tests

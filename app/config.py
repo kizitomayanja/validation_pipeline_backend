@@ -20,10 +20,16 @@ class Settings(BaseSettings):
     smtp_username: str | None = None
     smtp_password: str | None = None
     smtp_from_email: str | None = None
+    resend_api_key: str | None = None
+    resend_from_email: str = "Ekyama <onboarding@resend.dev>"
 
     @property
     def origins(self) -> list[str]:
-        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+        raw = [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+        for local in ("http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000", "http://127.0.0.1:3000"):
+            if local not in raw:
+                raw.append(local)
+        return raw
 
 
 @lru_cache
