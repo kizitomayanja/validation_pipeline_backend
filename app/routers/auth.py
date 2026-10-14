@@ -104,6 +104,8 @@ def request_password_reset(body: PasswordResetRequestIn, conn: psycopg.Connectio
         try:
             send_password_reset_email(str(body.email), reset_url)
         except Exception as exc:
+            error_string = traceback.format_exc()
+            print(error_string, flush=True)
             print(f"[email error] Exception during email dispatch for {body.email}: {exc}", flush=True)
 
     return {"message": "If an account exists for that email, a password reset link has been sent."}

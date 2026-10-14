@@ -3,6 +3,7 @@ import logging
 import smtplib
 import ssl
 import sys
+import traceback
 import urllib.error
 import urllib.request
 from email.message import EmailMessage
@@ -95,4 +96,5 @@ def send_password_reset_email(recipient: str, reset_url: str) -> bool:
         return True
     except (OSError, RuntimeError, smtplib.SMTPException) as exc:
         print(f"[email error] SMTP delivery failed for {recipient} ({smtp_host}:{port}): {exc}", file=sys.stderr, flush=True)
+        traceback.print_exc()
         return False
