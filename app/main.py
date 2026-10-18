@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import get_settings
 from .db import make_pool
-from .routers import admin, auth, me, payouts, review, work
+from .routers import admin, auth, me, payouts, review, tickets, work
 
 
 @asynccontextmanager
@@ -19,7 +19,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Ekyama validation API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=get_settings().origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-for r in (auth.router, me.router, work.router, payouts.router, admin.router, review.router):
+for r in (auth.router, me.router, work.router, payouts.router, admin.router, review.router, tickets.router):
     app.include_router(r)
 
 

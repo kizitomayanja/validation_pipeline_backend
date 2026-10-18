@@ -575,3 +575,109 @@ def test_admin_export_stats_and_csv_download(client, admin):
     res_cumulative = client.get("/admin/export/sentences.csv?scope=verified_only&only_new=false", headers=admin)
     assert "okukola obulungi" in res_cumulative.text
 
+
+def test_custom_partial_cashout_and_bounds(client, admin):
+    h, _ = make_user(client, "partial_cashout@example.com")
+    m = add_method(client, h).json()
+    earn(client, h, 2)  # earns 2800
+    bal = client.get("/me/balance", headers=h).json()
+    assert bal["available_ugx"] == 2800
+
+    # Below minimum (500 < 1000)
+    r_low = client.post("/payouts", headers=h, json={"payment_method_id": m["id"], "amount_ugx": 500})
+    assert r_low.status_code in (400, 422)
+
+    # Exceeds available (5000 > 2800)
+    r_high = client.post("/payouts", headers=h, json={"payment_method_id": m["id"], "amount_ugx": 5000})
+    assert r_high.status_code == 400
+
+    # Valid partial amount (1000 UGX)
+    r_valid = client.post("/payouts", headers=h, json={"payment_method_id": m["id"], "amount_ugx": 1000})
+    assert r_valid.status_code == 201
+    assert r_valid.json()["amount_ugx"] == 1000
+    assert r_valid.json()["status"] == "pending"
+
+    # Remaining balance check
+    b = client.get("/me/balance", headers=h).json()
+    assert b["available_ugx"] == 1800
+    assert b["pending_ugx"] == 1000
+
+
+def test_tickets_role_routing_and_messaging(client, admin):
+    # Setup users
+    val_h, _ = make_user(client, "validator_ticket@example.com")
+    rev_h, _ = make_user(client, "doctor_reviewer@example.com")
+    rev_user = client.get("/me", headers=rev_h).json()
+    client.patch(f"/admin/users/{rev_user['id']}", headers=admin, json={"role": "reviewer"})
+
+    # 1. Validator creates a clinical terminology question
+    r_clin = client.post("/tickets", headers=val_h, json={
+        "category": "clinical_terminology",
+        "subject": "Help translating hypertension symptoms",
+        "message": "Is puleesa appropriate for acute arterial hypertension?",
+        "sentence_id": 1,
+    })
+    assert r_clin.status_code == 201
+    clin_data = r_clin.json()
+    assert clin_data["category"] == "clinical_terminology"
+    assert clin_data["target_role"] == "reviewer"
+    assert clin_data["status"] == "open"
+    assert clin_data["message_count"] == 1
+
+    # 2. Validator creates a payment method, requests payout, and creates a payout issue ticket
+    m = add_method(client, val_h).json()
+    earn(client, val_h, 1)
+    payout = client.post("/payouts", headers=val_h, json={"payment_method_id": m["id"]}).json()
+
+    r_pay = client.post("/tickets", headers=val_h, json={
+        "category": "payout_issue",
+        "subject": "MTN MoMo withdrawal status",
+        "message": "When will my pending cashout be sent?",
+        "payout_id": payout["id"],
+    })
+    assert r_pay.status_code == 201
+    assert r_pay.json()["target_role"] == "admin"
+
+    # 3. Check scope routing
+    my_tickets = client.get("/tickets?scope=my", headers=val_h).json()
+    assert len(my_tickets) >= 2
+
+    # Doctor checks clinical queue
+    clin_queue = client.get("/tickets?scope=clinical", headers=rev_h).json()
+    assert any(t["id"] == clin_data["id"] for t in clin_queue)
+    assert not any(t["category"] == "payout_issue" for t in clin_queue)
+
+    # Admin checks ops queue
+    ops_queue = client.get("/tickets?scope=ops", headers=admin).json()
+    assert any(t["id"] == r_pay.json()["id"] for t in ops_queue)
+
+    # 4. Doctor sends a reply message to the clinical ticket
+    reply = client.post(f"/tickets/{clin_data['id']}/messages", headers=rev_h, json={
+        "message": "Yes, 'puleesa' is culturally recognized, but 'omusuwa gw'omusaayi ogulinnye' is more clinical.",
+    })
+    assert reply.status_code == 201
+    assert reply.json()["sender_role"] == "reviewer"
+
+    # 5. Doctor marks ticket resolved
+    patch_res = client.patch(f"/tickets/{clin_data['id']}", headers=rev_h, json={"status": "resolved"})
+    assert patch_res.status_code == 200
+    assert patch_res.json()["status"] == "resolved"
+
+    # Check ticket detail has both messages
+    detail = client.get(f"/tickets/{clin_data['id']}", headers=val_h).json()
+    assert detail["status"] == "resolved"
+    assert len(detail["messages"]) == 2
+
+    # 6. Privacy & Isolation Rules:
+    # A different validator cannot see or access another validator's inquiries
+    other_val_h, _ = make_user(client, "other_validator@example.com")
+    other_tickets = client.get("/tickets?scope=my", headers=other_val_h).json()
+    assert len(other_tickets) == 0
+    # Trying to fetch someone else's ticket yields 403 Forbidden
+    assert client.get(f"/tickets/{clin_data['id']}", headers=other_val_h).status_code == 403
+    assert client.post(f"/tickets/{clin_data['id']}/messages", headers=other_val_h, json={"message": "intruder"}).status_code == 403
+
+    # Reviewer cannot access confidential Admin ops / payout tickets
+    assert client.get(f"/tickets/{r_pay.json()['id']}", headers=rev_h).status_code == 403
+
+

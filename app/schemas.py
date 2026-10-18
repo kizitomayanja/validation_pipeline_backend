@@ -7,6 +7,7 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 
 Provider = Literal["mtn", "airtel"]
 PayoutStatus = Literal["pending", "paid", "rejected", "cancelled"]
+Role = Literal["validator", "reviewer", "admin"]
 
 
 def normalise_phone(v: str) -> str:
@@ -151,6 +152,7 @@ class MethodOut(BaseModel):
 
 class PayoutIn(BaseModel):
     payment_method_id: uuid.UUID
+    amount_ugx: int | None = Field(default=None, ge=1000)
 
 
 class PayoutOut(BaseModel):
@@ -318,3 +320,56 @@ class DatasetExportStatsOut(BaseModel):
     recent_exports: list[DatasetExportHistoryOut] = []
 
 
+
+# Support Tickets & Role-Routed Communication Schemas
+TicketCategory = Literal["clinical_terminology", "review_dispute", "payout_issue", "role_request", "general"]
+TicketStatus = Literal["open", "in_progress", "resolved"]
+TargetRole = Literal["reviewer", "admin"]
+
+
+class TicketMessageIn(BaseModel):
+    message: str = Field(min_length=1, max_length=5000)
+
+
+class TicketMessageOut(BaseModel):
+    id: uuid.UUID
+    ticket_id: uuid.UUID
+    sender_id: uuid.UUID
+    sender_name: str
+    sender_role: Role
+    message: str
+    created_at: datetime
+
+
+class TicketCreateIn(BaseModel):
+    category: TicketCategory
+    subject: str = Field(min_length=3, max_length=200)
+    message: str = Field(min_length=5, max_length=5000)
+    sentence_id: int | None = None
+    payout_id: uuid.UUID | None = None
+
+
+class TicketStatusUpdateIn(BaseModel):
+    status: TicketStatus
+
+
+class TicketOut(BaseModel):
+    id: uuid.UUID
+    author_id: uuid.UUID
+    author_name: str
+    author_email: str
+    author_role: Role
+    category: TicketCategory
+    target_role: TargetRole
+    subject: str
+    status: TicketStatus
+    sentence_id: int | None = None
+    payout_id: uuid.UUID | None = None
+    created_at: datetime
+    updated_at: datetime
+    message_count: int = 1
+    last_message_preview: str = ""
+
+
+class TicketDetailOut(TicketOut):
+    messages: list[TicketMessageOut] = []

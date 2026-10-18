@@ -169,3 +169,32 @@ alter table sentence_skips enable row level security;
 alter table dataset_exports enable row level security;
 
 
+
+-- Inquiries & Support Tickets: Role-routed communication between validators, reviewers, and admins.
+create table support_tickets (
+  id          uuid primary key default gen_random_uuid(),
+  ticket_num  serial unique,
+  author_id   uuid not null references profiles(id) on delete cascade,
+  category    text not null check (category in ('clinical_terminology', 'review_dispute', 'payout_issue', 'role_request', 'general')),
+  target_role text not null check (target_role in ('reviewer', 'admin')),
+  subject     text not null,
+  status      text not null default 'open' check (status in ('open', 'in_progress', 'resolved')),
+  sentence_id bigint references sentences(id) on delete set null,
+  payout_id   uuid references payouts(id) on delete set null,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+create index support_tickets_author_idx on support_tickets (author_id);
+create index support_tickets_target_role_idx on support_tickets (target_role, status);
+
+create table ticket_messages (
+  id         uuid primary key default gen_random_uuid(),
+  ticket_id  uuid not null references support_tickets(id) on delete cascade,
+  sender_id  uuid not null references profiles(id) on delete cascade,
+  message    text not null,
+  created_at timestamptz not null default now()
+);
+create index ticket_messages_ticket_idx on ticket_messages (ticket_id, created_at asc);
+
+alter table support_tickets enable row level security;
+alter table ticket_messages enable row level security;
