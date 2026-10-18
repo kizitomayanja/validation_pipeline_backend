@@ -450,39 +450,47 @@ def test_admin_user_oversight_and_role_management(client, admin):
 
 def test_review_pipeline_flow(client, admin):
     val_h, _ = make_user(client, "val4@example.com")
-    s = client.get("/work/next", headers=val_h).json()
-    client.post(f"/work/{s['id']}/submit", headers=val_h, json={"clean_lug": "okulongoosa"})
+    val5_h, _ = make_user(client, "specialuser@example.com")
+
+    s1 = client.get("/work/next", headers=val_h).json()
+    client.post(f"/work/{s1['id']}/submit", headers=val_h, json={"clean_lug": "okulongoosa"})
+
+    s2 = client.get("/work/next", headers=val5_h).json()
+    client.post(f"/work/{s2['id']}/submit", headers=val5_h, json={"clean_lug": "okukola obulungi"})
 
     # Regular validator cannot access review queue
     assert client.get("/review/queue", headers=val_h).status_code == 403
 
-    # Admin (or reviewer) accesses review queue
-    queue = client.get("/review/queue", headers=admin).json()
-    assert len(queue) == 1
-    assert queue[0]["id"] == s["id"]
-    assert queue[0]["clean_lug"] == "okulongoosa"
+    # Reviewer checks validators waiting in queue
+    validators = client.get("/review/validators", headers=admin).json()
+    assert len(validators) >= 2
+    emails = [v["email"] for v in validators]
+    assert "val4@example.com" in emails
+    assert "specialuser@example.com" in emails
 
-    # Test edit and approve
+    # Filter queue by specific username / email
+    filtered = client.get("/review/queue?username=specialuser", headers=admin).json()
+    assert len(filtered) == 1
+    assert filtered[0]["id"] == s2["id"]
+    assert filtered[0]["validator_email"] == "specialuser@example.com"
+
+    # Filter by non-existent username returns 0 items
+    assert len(client.get("/review/queue?username=unknown_person", headers=admin).json()) == 0
+
+    # Unfiltered queue returns all
+    all_queue = client.get("/review/queue", headers=admin).json()
+    assert len(all_queue) == 2
+
+    # Test edit and approve on s1
     edited = client.post(
-        f"/review/{s['id']}/edit",
+        f"/review/{s1['id']}/edit",
         headers=admin,
         json={"clean_lug": "okulongoosa obulungi"},
     ).json()
     assert edited["verified"] is True
     assert edited["clean_lug"] == "okulongoosa obulungi"
 
-    # Queue is now clear
-    assert len(client.get("/review/queue", headers=admin).json()) == 0
-
-    # Submit second sentence and test reject
-    s2 = client.get("/work/next", headers=val_h).json()
-    client.post(f"/work/{s2['id']}/submit", headers=val_h, json={"clean_lug": "bad translation"})
-
-    queue2 = client.get("/review/queue", headers=admin).json()
-    assert len(queue2) == 1
-    assert queue2[0]["id"] == s2["id"]
-
-    # Reject sentence
+    # Reject sentence s2
     rej = client.post(f"/review/{s2['id']}/reject", headers=admin, json={"rejection_reason": "Inaccurate"})
     assert rej.status_code == 204
 

@@ -245,8 +245,16 @@ class ReviewSentenceOut(BaseModel):
     reward_ugx: int
     validated_by_id: uuid.UUID
     validator_name: str
+    validator_email: str | None = None
     validated_at: datetime
     verified: bool
+
+
+class ReviewValidatorOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    email: str
+    count: int
 
 
 class ReviewActionIn(BaseModel):

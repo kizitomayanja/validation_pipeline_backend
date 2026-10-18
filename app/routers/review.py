@@ -3,30 +3,50 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from ..db import get_conn
 from ..deps import reviewer_user
-from ..schemas import ReviewActionIn, ReviewSentenceOut
+from ..schemas import ReviewActionIn, ReviewSentenceOut, ReviewValidatorOut
 
 router = APIRouter(prefix="/review", tags=["review"])
 
 _SELECT_REVIEW = """
 select s.id, s.noisy_english, s.attempted, s.clean_lug, s.difficulty, s.reward_ugx,
-       s.validated_by as validated_by_id, p.full_name as validator_name, s.validated_at, s.verified
+       s.validated_by as validated_by_id, p.full_name as validator_name, p.email as validator_email,
+       s.validated_at, s.verified
   from sentences s
   join profiles p on p.id = s.validated_by
 """
 
 
+@router.get("/validators", response_model=list[ReviewValidatorOut])
+def review_validators(reviewer: dict = Depends(reviewer_user),
+                      conn: psycopg.Connection = Depends(get_conn)):
+    """Fetch all validators who currently have sentences waiting in the review queue."""
+    return conn.execute(
+        """select p.id, p.full_name as name, p.email, count(s.id)::int as count
+             from sentences s
+             join profiles p on p.id = s.validated_by
+            where s.validated_by is not null and s.verified = false
+            group by p.id, p.full_name, p.email
+            order by count desc, p.full_name asc"""
+    ).fetchall()
+
+
 @router.get("/queue", response_model=list[ReviewSentenceOut])
 def review_queue(limit: int = Query(20, ge=1, le=100),
+                 username: str | None = Query(None, description="Filter queue by validator full name or email"),
                  reviewer: dict = Depends(reviewer_user),
                  conn: psycopg.Connection = Depends(get_conn)):
     """Fetch sentences submitted by validators that await clinical/linguistic verification."""
-    return conn.execute(
-        f"""{_SELECT_REVIEW}
-           where s.validated_by is not null and s.verified = false
-           order by s.validated_at asc
-           limit %s""",
-        (limit,)
-    ).fetchall()
+    query = f"""{_SELECT_REVIEW}
+           where s.validated_by is not null and s.verified = false"""
+    params: list = []
+    if username and username.strip():
+        pattern = f"%{username.strip()}%"
+        query += " and (p.full_name ilike %s or p.email ilike %s)"
+        params.extend([pattern, pattern])
+
+    query += " order by s.validated_at asc limit %s"
+    params.append(limit)
+    return conn.execute(query, tuple(params)).fetchall()
 
 
 @router.get("/{sentence_id}", response_model=ReviewSentenceOut)
