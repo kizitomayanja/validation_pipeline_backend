@@ -30,9 +30,30 @@ def cash_out(body: PayoutIn, user: dict = Depends(current_user), conn: psycopg.C
     minimum = conn.execute("select min_cashout_ugx from reward_settings").fetchone()["min_cashout_ugx"]
     if available < minimum:
         raise HTTPException(400, f"You need at least UGX {minimum:,} to cash out.")
+
+    payout_amount = body.amount_ugx if (body.amount_ugx is not None and body.amount_ugx > 0) else available
+    if payout_amount < minimum:
+        raise HTTPException(400, f"Minimum withdrawal amount is UGX {minimum:,}.")
+    if payout_amount > available:
+        raise HTTPException(400, f"Requested amount (UGX {payout_amount:,}) exceeds your available balance of UGX {available:,}.")
+
     payout = conn.execute(
         f"""insert into payouts (user_id, amount_ugx, provider, phone_number, account_name)
             values (%s, %s, %s, %s, %s) returning {_COLS}""",
-        (user["id"], available, method["provider"], method["phone_number"], method["account_name"])).fetchone()
-    conn.execute("update sentences set payout_id = %s where validated_by = %s and payout_id is null", (payout["id"], user["id"]))
+        (user["id"], payout_amount, method["provider"], method["phone_number"], method["account_name"])).fetchone()
+
+    if payout_amount == available:
+        conn.execute("update sentences set payout_id = %s where validated_by = %s and payout_id is null", (payout["id"], user["id"]))
+    else:
+        conn.execute("""
+            with cte as (
+                select id, sum(reward_ugx) over (order by validated_at asc) as running_total
+                from sentences
+                where validated_by = %s and payout_id is null
+            )
+            update sentences s
+            set payout_id = %s
+            from cte
+            where s.id = cte.id and (cte.running_total - s.reward_ugx) < %s
+        """, (user["id"], payout["id"], payout_amount))
     return payout

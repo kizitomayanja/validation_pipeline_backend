@@ -111,6 +111,8 @@ create table sentences (
   verified_by      uuid references profiles(id),
   verified_at      timestamptz,
 
+  exported_at      timestamptz,                     -- when extracted by admin for AI model training
+
   constraint validated_has_reward  check (validated_by is null or (reward_ugx is not null and clean_lug is not null)),
   constraint paid_requires_payout  check (paid_status = false or (validated_by is not null and payout_id is not null)),
   constraint verified_has_verifier check (verified = false or verified_by is not null)
@@ -119,6 +121,19 @@ create index on sentences (validated_by);
 create index on sentences (payout_id);
 -- fast "next sentence to validate": highest cost first among unvalidated
 create index sentences_queue on sentences (cost desc) where validated_by is null;
+create index idx_sentences_export_delta on sentences (validated_by, verified, exported_at) where validated_by is not null;
+
+-- Dataset export audit log for AI model training batches
+create table dataset_exports (
+  id             uuid primary key default gen_random_uuid(),
+  exported_by    uuid not null references profiles(id),
+  sentence_count integer not null,
+  scope          text not null check (scope in ('verified_only', 'all_validated')),
+  only_new       boolean not null default true,
+  file_name      text not null,
+  created_at     timestamptz not null default now()
+);
+create index on dataset_exports (created_at desc);
 
 -- Sentences a validator skipped; /work/next never serves them to that person again.
 create table sentence_skips (
@@ -151,4 +166,35 @@ alter table reward_settings enable row level security;
 alter table payouts enable row level security;
 alter table sentences enable row level security;
 alter table sentence_skips enable row level security;
+alter table dataset_exports enable row level security;
 
+
+
+-- Inquiries & Support Tickets: Role-routed communication between validators, reviewers, and admins.
+create table support_tickets (
+  id          uuid primary key default gen_random_uuid(),
+  ticket_num  serial unique,
+  author_id   uuid not null references profiles(id) on delete cascade,
+  category    text not null check (category in ('clinical_terminology', 'review_dispute', 'payout_issue', 'role_request', 'general')),
+  target_role text not null check (target_role in ('reviewer', 'admin')),
+  subject     text not null,
+  status      text not null default 'open' check (status in ('open', 'in_progress', 'resolved')),
+  sentence_id bigint references sentences(id) on delete set null,
+  payout_id   uuid references payouts(id) on delete set null,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+create index support_tickets_author_idx on support_tickets (author_id);
+create index support_tickets_target_role_idx on support_tickets (target_role, status);
+
+create table ticket_messages (
+  id         uuid primary key default gen_random_uuid(),
+  ticket_id  uuid not null references support_tickets(id) on delete cascade,
+  sender_id  uuid not null references profiles(id) on delete cascade,
+  message    text not null,
+  created_at timestamptz not null default now()
+);
+create index ticket_messages_ticket_idx on ticket_messages (ticket_id, created_at asc);
+
+alter table support_tickets enable row level security;
+alter table ticket_messages enable row level security;

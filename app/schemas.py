@@ -7,6 +7,7 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 
 Provider = Literal["mtn", "airtel"]
 PayoutStatus = Literal["pending", "paid", "rejected", "cancelled"]
+Role = Literal["validator", "reviewer", "admin"]
 
 
 def normalise_phone(v: str) -> str:
@@ -151,6 +152,7 @@ class MethodOut(BaseModel):
 
 class PayoutIn(BaseModel):
     payment_method_id: uuid.UUID
+    amount_ugx: int | None = Field(default=None, ge=1000)
 
 
 class PayoutOut(BaseModel):
@@ -168,6 +170,8 @@ class AdminPayoutOut(PayoutOut):
     user_name: str
     user_email: str
     sentence_count: int
+    verified_count: int = 0
+    accuracy_rate: float = 0.0
     provider_reference: str | None = None
     rejection_reason: str | None = None
     processed_at: datetime | None = None
@@ -226,9 +230,43 @@ class AdminUserOut(BaseModel):
     is_active: bool
     created_at: datetime
     validated_count: int
+    verified_count: int = 0
+    accuracy_rate: float = 0.0
     total_earned_ugx: int
     pending_ugx: int
     paid_out_ugx: int
+
+
+class UserSentenceDetailOut(BaseModel):
+    id: int
+    noisy_english: str
+    attempted: str
+    clean_lug: str
+    difficulty: Literal["easy", "medium", "hard"]
+    reward_ugx: int
+    verified: bool
+    verified_at: datetime | None = None
+    verified_by_name: str | None = None
+    validated_at: datetime
+    payout_id: uuid.UUID | None = None
+    paid_status: bool = False
+
+
+class UserQualityProfileOut(BaseModel):
+    id: uuid.UUID
+    email: str
+    full_name: str
+    role: Literal["validator", "reviewer", "admin"]
+    is_active: bool
+    created_at: datetime
+    validated_count: int
+    verified_count: int
+    pending_review_count: int
+    accuracy_rate: float
+    total_earned_ugx: int
+    pending_ugx: int
+    paid_out_ugx: int
+    recent_sentences: list[UserSentenceDetailOut] = []
 
 
 class AdminUserUpdateIn(BaseModel):
@@ -245,11 +283,93 @@ class ReviewSentenceOut(BaseModel):
     reward_ugx: int
     validated_by_id: uuid.UUID
     validator_name: str
+    validator_email: str | None = None
     validated_at: datetime
     verified: bool
+
+
+class ReviewValidatorOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    email: str
+    count: int
 
 
 class ReviewActionIn(BaseModel):
     clean_lug: str | None = None
     rejection_reason: str | None = None
 
+
+class DatasetExportHistoryOut(BaseModel):
+    id: uuid.UUID
+    exported_by_name: str
+    sentence_count: int
+    scope: Literal["verified_only", "all_validated"]
+    only_new: bool
+    file_name: str
+    created_at: datetime
+
+
+class DatasetExportStatsOut(BaseModel):
+    total_validated: int
+    total_verified: int
+    unexported_verified: int
+    unexported_validated: int
+    last_export_at: datetime | None = None
+    total_exports_count: int
+    recent_exports: list[DatasetExportHistoryOut] = []
+
+
+
+# Support Tickets & Role-Routed Communication Schemas
+TicketCategory = Literal["clinical_terminology", "review_dispute", "payout_issue", "role_request", "general"]
+TicketStatus = Literal["open", "in_progress", "resolved"]
+TargetRole = Literal["reviewer", "admin"]
+
+
+class TicketMessageIn(BaseModel):
+    message: str = Field(min_length=1, max_length=5000)
+
+
+class TicketMessageOut(BaseModel):
+    id: uuid.UUID
+    ticket_id: uuid.UUID
+    sender_id: uuid.UUID
+    sender_name: str
+    sender_role: Role
+    message: str
+    created_at: datetime
+
+
+class TicketCreateIn(BaseModel):
+    category: TicketCategory
+    subject: str = Field(min_length=3, max_length=200)
+    message: str = Field(min_length=5, max_length=5000)
+    sentence_id: int | None = None
+    payout_id: uuid.UUID | None = None
+
+
+class TicketStatusUpdateIn(BaseModel):
+    status: TicketStatus
+
+
+class TicketOut(BaseModel):
+    id: uuid.UUID
+    author_id: uuid.UUID
+    author_name: str
+    author_email: str
+    author_role: Role
+    category: TicketCategory
+    target_role: TargetRole
+    subject: str
+    status: TicketStatus
+    sentence_id: int | None = None
+    payout_id: uuid.UUID | None = None
+    created_at: datetime
+    updated_at: datetime
+    message_count: int = 1
+    last_message_preview: str = ""
+
+
+class TicketDetailOut(TicketOut):
+    messages: list[TicketMessageOut] = []
