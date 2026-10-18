@@ -1,5 +1,10 @@
+import csv
+import io
+from datetime import datetime, timezone
+from typing import Literal
+
 import psycopg
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from ..db import get_conn
 from ..deps import admin_user
@@ -8,12 +13,16 @@ from ..schemas import (
     AdminPayoutOut,
     AdminUserOut,
     AdminUserUpdateIn,
+    DatasetExportHistoryOut,
+    DatasetExportStatsOut,
     MarkPaidIn,
     PayoutStatus,
     RejectIn,
     SettingsOut,
     SettingsUpdateIn,
+    UserQualityProfileOut,
 )
+
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -21,8 +30,11 @@ _SELECT_PAYOUT = """
 select po.id, po.amount_ugx, po.status, po.requested_at, po.provider, po.phone_number, po.account_name,
        po.user_id, p.full_name as user_name, p.email as user_email,
        (select count(*) from sentences s where s.payout_id = po.id)::int as sentence_count,
+       (select count(*) from sentences s where s.payout_id = po.id and s.verified = true)::int as verified_count,
+       (select coalesce(round(100.0 * count(*) filter (where s.verified = true) / nullif(count(*), 0), 1), 0.0)::float from sentences s where s.payout_id = po.id) as accuracy_rate,
        po.provider_reference, po.rejection_reason, po.processed_at
   from payouts po join profiles p on p.id = po.user_id"""
+
 
 
 # ------------------------------------------------------------------ Settings & Budget Control
@@ -140,6 +152,8 @@ def list_users(admin: dict = Depends(admin_user), conn: psycopg.Connection = Dep
     rows = conn.execute(
         """select p.id, p.email, p.full_name, p.role, p.is_active, p.created_at,
                   count(s.id)::int as validated_count,
+                  count(s.id) filter (where s.verified = true)::int as verified_count,
+                  coalesce(round(100.0 * count(s.id) filter (where s.verified = true) / nullif(count(s.id), 0), 1), 0.0)::float as accuracy_rate,
                   coalesce(sum(s.reward_ugx), 0)::int as total_earned_ugx,
                   coalesce(sum(s.reward_ugx) filter (where po.status = 'pending'), 0)::int as pending_ugx,
                   coalesce(sum(s.reward_ugx) filter (where po.status = 'paid'), 0)::int as paid_out_ugx
@@ -150,6 +164,50 @@ def list_users(admin: dict = Depends(admin_user), conn: psycopg.Connection = Dep
            order by p.created_at desc"""
     ).fetchall()
     return rows
+
+
+@router.get("/users/{user_id}/quality", response_model=UserQualityProfileOut)
+def get_user_quality_profile(user_id: str, admin: dict = Depends(admin_user), conn: psycopg.Connection = Depends(get_conn)):
+    """Fetch contributor review accuracy profile, validation volume, and their submitted translations for inspection."""
+    try:
+        user = conn.execute(
+            """select p.id, p.email, p.full_name, p.role, p.is_active, p.created_at,
+                      count(s.id)::int as validated_count,
+                      count(s.id) filter (where s.verified = true)::int as verified_count,
+                      count(s.id) filter (where s.verified = false)::int as pending_review_count,
+                      coalesce(round(100.0 * count(s.id) filter (where s.verified = true) / nullif(count(s.id), 0), 1), 0.0)::float as accuracy_rate,
+                      coalesce(sum(s.reward_ugx), 0)::int as total_earned_ugx,
+                      coalesce(sum(s.reward_ugx) filter (where po.status = 'pending'), 0)::int as pending_ugx,
+                      coalesce(sum(s.reward_ugx) filter (where po.status = 'paid'), 0)::int as paid_out_ugx
+               from profiles p
+               left join sentences s on s.validated_by = p.id
+               left join payouts po on po.id = s.payout_id
+               where p.id = %s
+               group by p.id""",
+            (user_id,)
+        ).fetchone()
+    except psycopg.errors.InvalidTextRepresentation:
+        user = None
+
+    if user is None:
+        raise HTTPException(404, "User not found.")
+
+    recent_sentences = conn.execute(
+        """select s.id, s.noisy_english, s.attempted, s.clean_lug, s.difficulty, s.reward_ugx,
+                  s.verified, s.verified_at, r.full_name as verified_by_name, s.validated_at,
+                  s.payout_id, s.paid_status
+           from sentences s
+           left join profiles r on r.id = s.verified_by
+           where s.validated_by = %s
+           order by s.validated_at desc
+           limit 50""",
+        (user_id,)
+    ).fetchall()
+
+    return {
+        **user,
+        "recent_sentences": recent_sentences,
+    }
 
 
 @router.patch("/users/{user_id}", response_model=AdminUserOut)
@@ -182,6 +240,8 @@ def update_user(user_id: str, body: AdminUserUpdateIn, admin: dict = Depends(adm
     row = conn.execute(
         """select p.id, p.email, p.full_name, p.role, p.is_active, p.created_at,
                   count(s.id)::int as validated_count,
+                  count(s.id) filter (where s.verified = true)::int as verified_count,
+                  coalesce(round(100.0 * count(s.id) filter (where s.verified = true) / nullif(count(s.id), 0), 1), 0.0)::float as accuracy_rate,
                   coalesce(sum(s.reward_ugx), 0)::int as total_earned_ugx,
                   coalesce(sum(s.reward_ugx) filter (where po.status = 'pending'), 0)::int as pending_ugx,
                   coalesce(sum(s.reward_ugx) filter (where po.status = 'paid'), 0)::int as paid_out_ugx
@@ -193,6 +253,7 @@ def update_user(user_id: str, body: AdminUserUpdateIn, admin: dict = Depends(adm
         (user_id,)
     ).fetchone()
     return row
+
 
 
 # ------------------------------------------------------------------ Payout Oversight
@@ -231,3 +292,161 @@ def reject(payout_id: str, body: RejectIn, admin: dict = Depends(admin_user), co
                  (body.reason.strip(), admin["id"], payout_id))
     conn.execute("update sentences set payout_id = null where payout_id = %s", (payout_id,))
     return conn.execute(f"{_SELECT_PAYOUT} where po.id = %s", (payout_id,)).fetchone()
+
+
+def _ensure_export_schema(conn: psycopg.Connection) -> None:
+    conn.execute("alter table sentences add column if not exists exported_at timestamptz;")
+    conn.execute(
+        """create table if not exists dataset_exports (
+            id uuid primary key default gen_random_uuid(),
+            exported_by uuid not null references profiles(id),
+            sentence_count integer not null,
+            scope text not null check (scope in ('verified_only', 'all_validated')),
+            only_new boolean not null default true,
+            file_name text not null,
+            created_at timestamptz not null default now()
+        );"""
+    )
+
+
+# ------------------------------------------------------------------ Dataset Extraction & Export
+@router.get("/export/stats", response_model=DatasetExportStatsOut)
+def get_export_stats(admin: dict = Depends(admin_user), conn: psycopg.Connection = Depends(get_conn)):
+    _ensure_export_schema(conn)
+    counts = conn.execute(
+        """select count(*) filter (where validated_by is not null)::int as total_validated,
+                  count(*) filter (where validated_by is not null and verified = true)::int as total_verified,
+                  count(*) filter (where validated_by is not null and verified = true and exported_at is null)::int as unexported_verified,
+                  count(*) filter (where validated_by is not null and exported_at is null)::int as unexported_validated
+             from sentences"""
+    ).fetchone()
+
+    recent_exports = conn.execute(
+        """select de.id, p.full_name as exported_by_name, de.sentence_count, de.scope, de.only_new, de.file_name, de.created_at
+             from dataset_exports de
+             join profiles p on p.id = de.exported_by
+            order by de.created_at desc
+            limit 10"""
+    ).fetchall()
+
+    total_exports = conn.execute("select count(*)::int as count from dataset_exports").fetchone()["count"]
+    last_export_at = recent_exports[0]["created_at"] if recent_exports else None
+
+    return {
+        "total_validated": counts["total_validated"],
+        "total_verified": counts["total_verified"],
+        "unexported_verified": counts["unexported_verified"],
+        "unexported_validated": counts["unexported_validated"],
+        "last_export_at": last_export_at,
+        "total_exports_count": total_exports,
+        "recent_exports": recent_exports,
+    }
+
+
+@router.get("/export/sentences.csv")
+def export_sentences_csv(
+    scope: Literal["verified_only", "all_validated"] = Query("verified_only", description="Dataset quality scope"),
+    only_new: bool = Query(True, description="Filter only sentences that haven't been exported yet"),
+    mark_exported: bool = Query(True, description="Mark exported sentences with current timestamp"),
+    admin: dict = Depends(admin_user),
+    conn: psycopg.Connection = Depends(get_conn),
+):
+    _ensure_export_schema(conn)
+
+    query_parts = [
+        """select s.id as sentence_id,
+                  s.noisy_english as english_prompt,
+                  s.attempted as initial_draft,
+                  s.clean_lug as validated_luganda,
+                  case when s.verified then 'verified' else 'validated' end as quality_status,
+                  s.difficulty,
+                  p.full_name as validator_name,
+                  p.email as validator_email,
+                  s.validated_at,
+                  r.full_name as verified_by_name,
+                  s.verified_at
+             from sentences s
+             join profiles p on p.id = s.validated_by
+        left join profiles r on r.id = s.verified_by
+            where s.validated_by is not null"""
+    ]
+    params: list = []
+
+    if scope == "verified_only":
+        query_parts.append("and s.verified = true")
+
+    if only_new:
+        query_parts.append("and s.exported_at is null")
+
+    query_parts.append("order by s.id asc")
+    full_query = " ".join(query_parts)
+
+    rows = conn.execute(full_query, tuple(params)).fetchall()
+
+    now = datetime.now(timezone.utc)
+    timestamp_str = now.strftime("%Y%m%d_%H%M%S")
+    filename = f"ekyama_dataset_{scope}_{timestamp_str}.csv"
+
+    # Mark as exported and log in dataset_exports if requested and rows exist
+    if rows and mark_exported:
+        sentence_ids = [r["sentence_id"] for r in rows]
+        conn.execute(
+            "update sentences set exported_at = %s where id = any(%s)",
+            (now, sentence_ids),
+        )
+        conn.execute(
+            """insert into dataset_exports (exported_by, sentence_count, scope, only_new, file_name, created_at)
+               values (%s, %s, %s, %s, %s, %s)""",
+            (admin["id"], len(rows), scope, only_new, filename, now),
+        )
+
+    # Build CSV content
+    buffer = io.StringIO()
+    # Write UTF-8 BOM so Excel opens cleanly without mangling Luganda characters
+    buffer.write("\ufeff")
+
+    writer = csv.writer(buffer, quoting=csv.QUOTE_MINIMAL)
+    headers = [
+        "sentence_id",
+        "english_prompt",
+        "initial_draft",
+        "validated_luganda",
+        "quality_status",
+        "difficulty",
+        "validator_name",
+        "validator_email",
+        "validated_at",
+        "verified_by_name",
+        "verified_at",
+        "exported_at",
+    ]
+    writer.writerow(headers)
+
+    for r in rows:
+        writer.writerow([
+            r["sentence_id"],
+            r["english_prompt"],
+            r["initial_draft"],
+            r["validated_luganda"],
+            r["quality_status"],
+            r["difficulty"],
+            r["validator_name"],
+            r["validator_email"] or "",
+            r["validated_at"].isoformat() if r["validated_at"] else "",
+            r["verified_by_name"] or "",
+            r["verified_at"].isoformat() if r["verified_at"] else "",
+            now.isoformat(),
+        ])
+
+    csv_data = buffer.getvalue()
+    buffer.close()
+
+    return Response(
+        content=csv_data.encode("utf-8"),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        },
+    )
+

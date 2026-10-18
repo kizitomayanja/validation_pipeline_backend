@@ -111,6 +111,8 @@ create table sentences (
   verified_by      uuid references profiles(id),
   verified_at      timestamptz,
 
+  exported_at      timestamptz,                     -- when extracted by admin for AI model training
+
   constraint validated_has_reward  check (validated_by is null or (reward_ugx is not null and clean_lug is not null)),
   constraint paid_requires_payout  check (paid_status = false or (validated_by is not null and payout_id is not null)),
   constraint verified_has_verifier check (verified = false or verified_by is not null)
@@ -119,6 +121,19 @@ create index on sentences (validated_by);
 create index on sentences (payout_id);
 -- fast "next sentence to validate": highest cost first among unvalidated
 create index sentences_queue on sentences (cost desc) where validated_by is null;
+create index idx_sentences_export_delta on sentences (validated_by, verified, exported_at) where validated_by is not null;
+
+-- Dataset export audit log for AI model training batches
+create table dataset_exports (
+  id             uuid primary key default gen_random_uuid(),
+  exported_by    uuid not null references profiles(id),
+  sentence_count integer not null,
+  scope          text not null check (scope in ('verified_only', 'all_validated')),
+  only_new       boolean not null default true,
+  file_name      text not null,
+  created_at     timestamptz not null default now()
+);
+create index on dataset_exports (created_at desc);
 
 -- Sentences a validator skipped; /work/next never serves them to that person again.
 create table sentence_skips (
@@ -151,4 +166,6 @@ alter table reward_settings enable row level security;
 alter table payouts enable row level security;
 alter table sentences enable row level security;
 alter table sentence_skips enable row level security;
+alter table dataset_exports enable row level security;
+
 

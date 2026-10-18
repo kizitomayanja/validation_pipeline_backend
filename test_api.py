@@ -512,3 +512,66 @@ def test_password_reset_handles_mailer_failure_gracefully_without_503(client, mo
 
     tokens = sql('select id, user_id from password_reset_tokens where used_at is null', fetch=True)
     assert len(tokens) > 0
+
+
+def test_admin_export_stats_and_csv_download(client, admin):
+    # Ordinary user gets 403 on admin export
+    user_h, _ = make_user(client, "normal_validator@example.com")
+    assert client.get("/admin/export/stats", headers=user_h).status_code == 403
+    assert client.get("/admin/export/sentences.csv", headers=user_h).status_code == 403
+
+    # Check stats before validations
+    stats = client.get("/admin/export/stats", headers=admin).json()
+    assert stats["total_validated"] == 0
+    assert stats["unexported_verified"] == 0
+
+    # User submits two translations
+    s1 = client.get("/work/next", headers=user_h).json()
+    client.post(f"/work/{s1['id']}/submit", headers=user_h, json={"clean_lug": "okukola obulungi"})
+
+    s2 = client.get("/work/next", headers=user_h).json()
+    client.post(f"/work/{s2['id']}/submit", headers=user_h, json={"clean_lug": "eddwaaliro ly'e Mulago"})
+
+    # Check stats: 2 validated, 0 verified
+    stats = client.get("/admin/export/stats", headers=admin).json()
+    assert stats["total_validated"] == 2
+    assert stats["total_verified"] == 0
+    assert stats["unexported_validated"] == 2
+    assert stats["unexported_verified"] == 0
+
+    # Reviewer/admin approves sentence s1
+    client.post(f"/review/{s1['id']}/approve", headers=admin)
+
+    # Check stats: 2 validated, 1 verified
+    stats = client.get("/admin/export/stats", headers=admin).json()
+    assert stats["total_validated"] == 2
+    assert stats["total_verified"] == 1
+    assert stats["unexported_verified"] == 1
+    assert stats["unexported_validated"] == 2
+
+    # Download verified only as CSV with mark_exported=True
+    res = client.get("/admin/export/sentences.csv?scope=verified_only&only_new=true&mark_exported=true", headers=admin)
+    assert res.status_code == 200
+    assert "text/csv" in res.headers["content-type"]
+    assert "ekyama_dataset_verified_only_" in res.headers["content-disposition"]
+    csv_text = res.text
+    assert csv_text.startswith("\ufeffsentence_id,english_prompt")
+    assert "okukola obulungi" in csv_text
+    assert "eddwaaliro ly'e Mulago" not in csv_text  # s2 not yet verified
+
+    # Check stats after export: unexported_verified is now 0!
+    stats_after = client.get("/admin/export/stats", headers=admin).json()
+    assert stats_after["unexported_verified"] == 0
+    assert stats_after["total_exports_count"] >= 1
+    assert len(stats_after["recent_exports"]) >= 1
+    assert stats_after["recent_exports"][0]["sentence_count"] == 1
+
+    # Requesting only_new=true now returns 0 data rows (header only)
+    res_empty = client.get("/admin/export/sentences.csv?scope=verified_only&only_new=true", headers=admin)
+    lines = res_empty.text.strip().splitlines()
+    assert len(lines) == 1  # only header row
+
+    # Requesting cumulative (only_new=false) returns s1 again
+    res_cumulative = client.get("/admin/export/sentences.csv?scope=verified_only&only_new=false", headers=admin)
+    assert "okukola obulungi" in res_cumulative.text
+

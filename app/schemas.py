@@ -168,6 +168,8 @@ class AdminPayoutOut(PayoutOut):
     user_name: str
     user_email: str
     sentence_count: int
+    verified_count: int = 0
+    accuracy_rate: float = 0.0
     provider_reference: str | None = None
     rejection_reason: str | None = None
     processed_at: datetime | None = None
@@ -226,9 +228,43 @@ class AdminUserOut(BaseModel):
     is_active: bool
     created_at: datetime
     validated_count: int
+    verified_count: int = 0
+    accuracy_rate: float = 0.0
     total_earned_ugx: int
     pending_ugx: int
     paid_out_ugx: int
+
+
+class UserSentenceDetailOut(BaseModel):
+    id: int
+    noisy_english: str
+    attempted: str
+    clean_lug: str
+    difficulty: Literal["easy", "medium", "hard"]
+    reward_ugx: int
+    verified: bool
+    verified_at: datetime | None = None
+    verified_by_name: str | None = None
+    validated_at: datetime
+    payout_id: uuid.UUID | None = None
+    paid_status: bool = False
+
+
+class UserQualityProfileOut(BaseModel):
+    id: uuid.UUID
+    email: str
+    full_name: str
+    role: Literal["validator", "reviewer", "admin"]
+    is_active: bool
+    created_at: datetime
+    validated_count: int
+    verified_count: int
+    pending_review_count: int
+    accuracy_rate: float
+    total_earned_ugx: int
+    pending_ugx: int
+    paid_out_ugx: int
+    recent_sentences: list[UserSentenceDetailOut] = []
 
 
 class AdminUserUpdateIn(BaseModel):
@@ -260,4 +296,25 @@ class ReviewValidatorOut(BaseModel):
 class ReviewActionIn(BaseModel):
     clean_lug: str | None = None
     rejection_reason: str | None = None
+
+
+class DatasetExportHistoryOut(BaseModel):
+    id: uuid.UUID
+    exported_by_name: str
+    sentence_count: int
+    scope: Literal["verified_only", "all_validated"]
+    only_new: bool
+    file_name: str
+    created_at: datetime
+
+
+class DatasetExportStatsOut(BaseModel):
+    total_validated: int
+    total_verified: int
+    unexported_verified: int
+    unexported_validated: int
+    last_export_at: datetime | None = None
+    total_exports_count: int
+    recent_exports: list[DatasetExportHistoryOut] = []
+
 
