@@ -17,7 +17,8 @@ def me(user: dict = Depends(current_user)):
 @router.get("/balance", response_model=BalanceOut)
 def balance(user: dict = Depends(current_user), conn: psycopg.Connection = Depends(get_conn)):
     return conn.execute(
-        """select b.total_earned_ugx, b.available_ugx, b.pending_ugx, b.paid_out_ugx, b.validated_count, rs.min_cashout_ugx
+        """select b.total_earned_ugx, b.available_ugx, b.pending_ugx, b.paid_out_ugx, b.validated_count,
+                  b.verified_count, b.pending_review_count, b.pending_review_ugx, rs.min_cashout_ugx
            from user_balances b cross join reward_settings rs where b.user_id = %s""", (user["id"],)).fetchone()
 
 

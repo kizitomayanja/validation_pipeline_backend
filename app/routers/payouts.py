@@ -25,7 +25,7 @@ def cash_out(body: PayoutIn, user: dict = Depends(current_user), conn: psycopg.C
         raise HTTPException(400, "Choose a mobile money account.")
     if conn.execute("select 1 from payouts where user_id = %s and status = 'pending'", (user["id"],)).fetchone():
         raise HTTPException(409, "You already have a cash-out waiting for payment.")
-    available = conn.execute("select coalesce(sum(reward_ugx), 0)::int as n from sentences where validated_by = %s and payout_id is null",
+    available = conn.execute("select coalesce(sum(reward_ugx), 0)::int as n from sentences where validated_by = %s and verified = true and payout_id is null",
                              (user["id"],)).fetchone()["n"]
     minimum = conn.execute("select min_cashout_ugx from reward_settings").fetchone()["min_cashout_ugx"]
     if available < minimum:
@@ -43,13 +43,13 @@ def cash_out(body: PayoutIn, user: dict = Depends(current_user), conn: psycopg.C
         (user["id"], payout_amount, method["provider"], method["phone_number"], method["account_name"])).fetchone()
 
     if payout_amount == available:
-        conn.execute("update sentences set payout_id = %s where validated_by = %s and payout_id is null", (payout["id"], user["id"]))
+        conn.execute("update sentences set payout_id = %s where validated_by = %s and verified = true and payout_id is null", (payout["id"], user["id"]))
     else:
         conn.execute("""
             with cte as (
                 select id, sum(reward_ugx) over (order by validated_at asc) as running_total
                 from sentences
-                where validated_by = %s and payout_id is null
+                where validated_by = %s and verified = true and payout_id is null
             )
             update sentences s
             set payout_id = %s

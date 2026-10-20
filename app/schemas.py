@@ -77,6 +77,9 @@ class BalanceOut(BaseModel):
     pending_ugx: int
     paid_out_ugx: int
     validated_count: int
+    verified_count: int = 0
+    pending_review_count: int = 0
+    pending_review_ugx: int = 0
     min_cashout_ugx: int
 
 

@@ -32,10 +32,18 @@ with psycopg.connect(URI, autocommit=True) as c:
                    greatest(0, coalesce(sent.total_earned, 0) - coalesce(pay.pending_amount, 0) - coalesce(pay.paid_amount, 0)) as available_ugx,
                    coalesce(pay.pending_amount, 0) as pending_ugx,
                    coalesce(pay.paid_amount, 0) as paid_out_ugx,
-                   coalesce(sent.validated_count, 0) as validated_count
+                   coalesce(sent.validated_count, 0) as validated_count,
+                   coalesce(sent.verified_count, 0) as verified_count,
+                   coalesce(sent.pending_review_count, 0) as pending_review_count,
+                   coalesce(sent.pending_review_ugx, 0) as pending_review_ugx
             from profiles p
             left join (
-                select validated_by, sum(reward_ugx) as total_earned, count(id) as validated_count
+                select validated_by,
+                       sum(reward_ugx) filter (where verified = true) as total_earned,
+                       count(id) as validated_count,
+                       count(id) filter (where verified = true) as verified_count,
+                       count(id) filter (where verified = false) as pending_review_count,
+                       coalesce(sum(reward_ugx) filter (where verified = false), 0) as pending_review_ugx
                 from sentences
                 where validated_by is not null
                 group by validated_by

@@ -143,14 +143,17 @@ create table sentence_skips (
   primary key (user_id, sentence_id)
 );
 
--- What the profile page shows. Rejected/cancelled payouts release their sentences (payout_id = null), so they count as available again.
+-- What the profile page shows. Only clinically verified translations (verified = true) generate earned and available balance for withdrawal.
 create view user_balances as
 select p.id as user_id,
-       coalesce(sum(s.reward_ugx), 0)                                         as total_earned_ugx,
-       coalesce(sum(s.reward_ugx) filter (where s.payout_id is null), 0)       as available_ugx,
-       coalesce(sum(s.reward_ugx) filter (where po.status = 'pending'), 0)     as pending_ugx,
-       coalesce(sum(s.reward_ugx) filter (where po.status = 'paid'), 0)        as paid_out_ugx,
-       count(s.id)                                                             as validated_count
+       coalesce(sum(s.reward_ugx) filter (where s.verified = true), 0)                                   as total_earned_ugx,
+       coalesce(sum(s.reward_ugx) filter (where s.verified = true and s.payout_id is null), 0)           as available_ugx,
+       coalesce(sum(s.reward_ugx) filter (where po.status = 'pending'), 0)                               as pending_ugx,
+       coalesce(sum(s.reward_ugx) filter (where po.status = 'paid'), 0)                                  as paid_out_ugx,
+       count(s.id) filter (where s.validated_by is not null)                                            as validated_count,
+       count(s.id) filter (where s.verified = true)                                                      as verified_count,
+       count(s.id) filter (where s.validated_by is not null and s.verified = false)                       as pending_review_count,
+       coalesce(sum(s.reward_ugx) filter (where s.validated_by is not null and s.verified = false), 0)   as pending_review_ugx
 from profiles p
 left join sentences s  on s.validated_by = p.id
 left join payouts   po on po.id = s.payout_id
