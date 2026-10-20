@@ -201,3 +201,76 @@ create index ticket_messages_ticket_idx on ticket_messages (ticket_id, created_a
 
 alter table support_tickets enable row level security;
 alter table ticket_messages enable row level security;
+
+-- Auto-scoring trigger for dynamic difficulty and reward calibration on newly inserted/updated sentences.
+-- Calibrates:
+--   - length_words: human translation workload
+--   - cost / difficulty_score: composite score S in [0.0, 1.0] balancing workload (55%), terminology (35%), and structure (10%)
+--   - difficulty: 'easy' (<0.15), 'medium' (0.15 to <0.45), 'hard' (>=0.45)
+create or replace function calculate_sentence_scoring()
+returns trigger as $$
+declare
+    v_words integer;
+    v_punct integer;
+    v_workload numeric;
+    v_term_score numeric;
+    v_punct_score numeric;
+    v_score numeric;
+begin
+    -- 1. Word count
+    if new.length_words is null or new.length_words <= 0 then
+        v_words := coalesce(array_length(regexp_split_to_array(trim(new.noisy_english), '\s+'), 1), 0);
+        new.length_words := v_words;
+    else
+        v_words := new.length_words;
+    end if;
+
+    -- 2. Terminal and clause punctuation count
+    v_punct := length(new.noisy_english) - length(regexp_replace(new.noisy_english, '[\.\?\!;:]', '', 'g'));
+
+    -- 3. Workload factor (55% weight): (words / 120)^0.85 capped at 1.0
+    if v_words > 0 then
+        v_workload := least(1.0, power(v_words::numeric / 120.0, 0.85));
+    else
+        v_workload := 0.0;
+    end if;
+
+    -- 4. Terminology density factor (35% weight): cost_raw / 2.5 capped at 1.0
+    if new.cost_raw is null then
+        new.cost_raw := 0.0;
+    end if;
+    v_term_score := least(1.0, new.cost_raw / 2.5);
+
+    -- 5. Discourse structure factor (10% weight): punct / 6.0 capped at 1.0
+    v_punct_score := least(1.0, v_punct::numeric / 6.0);
+
+    -- 6. Balanced composite score
+    v_score := round(0.55 * v_workload + 0.35 * v_term_score + 0.10 * v_punct_score, 4);
+    v_score := greatest(0.0001, least(1.0, v_score));
+
+    -- Auto-assign cost and difficulty_score if not supplied or on insert
+    if new.cost is null or new.cost = 0 or tg_op = 'INSERT' then
+        new.cost := v_score;
+        new.difficulty_score := v_score;
+    end if;
+
+    -- Auto-assign difficulty category
+    if new.difficulty is null or tg_op = 'INSERT' then
+        if v_score < 0.15 then
+            new.difficulty := 'easy';
+        elsif v_score < 0.45 then
+            new.difficulty := 'medium';
+        else
+            new.difficulty := 'hard';
+        end if;
+    end if;
+
+    return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists trigger_auto_score_sentence on sentences;
+create trigger trigger_auto_score_sentence
+before insert or update of noisy_english on sentences
+for each row execute function calculate_sentence_scoring();
+
