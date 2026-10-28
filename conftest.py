@@ -24,6 +24,7 @@ with psycopg.connect(URI, autocommit=True) as c:
     if not exists:
         c.execute((ROOT / "schema.sql").read_text(encoding="utf-8"))
     else:
+        c.execute("alter table sentences add column if not exists length_tier text check (length_tier in ('short', 'medium', 'long'));")
         # Ensure user_balances view supports custom partial cashouts
         c.execute("""
             create or replace view user_balances as
@@ -102,8 +103,8 @@ def fresh_db():
     sql("truncate sentence_skips, sentences, payouts, payment_methods, refresh_tokens, profiles restart identity cascade")
     sql("update reward_settings set rate_ugx = 2000, min_reward_ugx = 100, min_cashout_ugx = 1000, max_budget_ugx = null")
     for i, (en, lug, cost, diff) in enumerate(SEED, 1):
-        sql("insert into sentences (source_row, noisy_english, attempted, length_words, cost_raw, cost, difficulty_score, difficulty) "
-            "values (%s,%s,%s,5,%s,%s,%s,%s)", (i, en, lug, cost, cost, cost, diff))
+        sql("insert into sentences (source_row, noisy_english, attempted, length_words, cost_raw, cost, difficulty_score, difficulty, length_tier) "
+            "values (%s,%s,%s,5,%s,%s,%s,%s,'short')", (i, en, lug, cost, cost, cost, diff))
 
 
 @pytest.fixture

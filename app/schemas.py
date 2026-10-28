@@ -83,12 +83,17 @@ class BalanceOut(BaseModel):
     min_cashout_ugx: int
 
 
+LengthTier = Literal["short", "medium", "long"]
+
+
 class WorkOut(BaseModel):
     id: int
     noisy_english: str
     attempted: str
     difficulty: Literal["easy", "medium", "hard"]
     reward_ugx: int
+    length_tier: LengthTier | None = None
+    length_words: int | None = None
 
 
 class DatasetProgressOut(BaseModel):

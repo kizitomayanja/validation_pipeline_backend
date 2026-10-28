@@ -680,4 +680,49 @@ def test_tickets_role_routing_and_messaging(client, admin):
     # Reviewer cannot access confidential Admin ops / payout tickets
     assert client.get(f"/tickets/{r_pay.json()['id']}", headers=rev_h).status_code == 403
 
+def test_length_tier_filtering_and_fields(client):
+    from conftest import sql
+    h, _ = make_user(client, "tier_validator@example.com")
+    
+    # Insert sentences across short, medium, and long tiers with distinct costs
+    sql("truncate sentence_skips, sentences restart identity cascade")
+    sql(
+        "insert into sentences (source_row, noisy_english, attempted, length_words, cost_raw, cost, difficulty_score, difficulty, length_tier) "
+        "values (101, 'Short clinical prompt', 'hint 1', 8, 0.9, 0.9, 0.9, 'hard', 'short'),"
+        "       (102, 'Medium clinical prompt with multiple symptoms reported by patient', 'hint 2', 25, 0.85, 0.85, 0.85, 'hard', 'medium'),"
+        "       (103, 'A very long in-depth clinical paragraph detailing continuous abdominal pain along with persistent fever and dehydration over past four weeks requiring immediate IV fluids', 'hint 3', 55, 0.95, 0.95, 0.95, 'hard', 'long')"
+    )
+
+    # 1. Default request without tier returns highest cost overall (sentence 103, cost 0.95)
+    r_default = client.get("/work/next", headers=h)
+    assert r_default.status_code == 200
+    data_default = r_default.json()
+    assert data_default["id"] == 1
+    assert data_default["length_tier"] == "long"
+    assert data_default["length_words"] == 55
+
+    # Release claim via skip
+    client.post(f"/work/{data_default['id']}/skip", headers=h)
+
+    # 2. Filter for 'short' tier
+    r_short = client.get("/work/next?tier=short", headers=h)
+    assert r_short.status_code == 200
+    data_short = r_short.json()
+    assert data_short["id"] == 101 or data_short["length_tier"] == "short"
+    assert data_short["length_tier"] == "short"
+    assert data_short["length_words"] == 8
+
+    # Release claim via skip
+    client.post(f"/work/{data_short['id']}/skip", headers=h)
+
+    # 3. Filter for 'medium' tier
+    r_med = client.get("/work/next?tier=medium", headers=h)
+    assert r_med.status_code == 200
+    data_med = r_med.json()
+    assert data_med["length_tier"] == "medium"
+    assert data_med["length_words"] == 25
+
+    # 4. Invalid tier returns 422 validation error
+    r_invalid = client.get("/work/next?tier=super_hard", headers=h)
+    assert r_invalid.status_code == 422
 

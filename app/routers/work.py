@@ -1,10 +1,11 @@
 import psycopg
-from fastapi import APIRouter, Depends, HTTPException, Response
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from ..config import get_settings
 from ..db import get_conn
 from ..deps import current_user
-from ..schemas import DatasetProgressOut, FinishedSentenceOut, SubmitIn, SubmitOut, WorkOut
+from ..schemas import DatasetProgressOut, FinishedSentenceOut, LengthTier, SubmitIn, SubmitOut, WorkOut
 
 router = APIRouter(prefix="/work", tags=["work"])
 
@@ -24,6 +25,7 @@ with pick as (
   where s.validated_by is null
     and (s.claimed_by is null or s.claim_expires_at < now() or s.claimed_by = %(me)s)
     and not exists (select 1 from sentence_skips k where k.sentence_id = s.id and k.user_id = %(me)s)
+    and (%(tier)s is null or s.length_tier = %(tier)s or (s.claimed_by = %(me)s and s.claim_expires_at >= now()))
   order by coalesce(s.claimed_by = %(me)s and s.claim_expires_at >= now(), false) desc,  -- resume my own open claim first
            {effective_cost} desc, s.id
   limit 1
@@ -33,7 +35,7 @@ update sentences s
    set claimed_by = %(me)s, claim_expires_at = now() + make_interval(mins => %(mins)s)
   from pick, reward_settings rs
  where s.id = pick.id
-returning s.id, s.noisy_english, s.attempted, s.difficulty,
+returning s.id, s.noisy_english, s.attempted, s.difficulty, s.length_tier, s.length_words,
           greatest(rs.min_reward_ugx, round(({effective_cost}) * rs.rate_ugx))::int as reward_ugx
 """.format(effective_cost=EFFECTIVE_COST_SQL)
 
@@ -89,7 +91,11 @@ def finished_sentences(user: dict = Depends(current_user), conn: psycopg.Connect
 
 
 @router.get("/next", response_model=WorkOut, responses={204: {"description": "Nothing left to validate or budget reached"}})
-def next_sentence(user: dict = Depends(current_user), conn: psycopg.Connection = Depends(get_conn)):
+def next_sentence(
+    tier: Optional[LengthTier] = Query(None, description="Optional length tier filter: short, medium, long"),
+    user: dict = Depends(current_user),
+    conn: psycopg.Connection = Depends(get_conn),
+):
     # If budget is exhausted, allow completing only an active claim already held by the user
     has_active_claim = conn.execute(
         "select 1 from sentences where claimed_by = %s and claim_expires_at >= now() and validated_by is null limit 1",
@@ -98,7 +104,10 @@ def next_sentence(user: dict = Depends(current_user), conn: psycopg.Connection =
     if not has_active_claim and _is_budget_exhausted(conn):
         return Response(status_code=204)
 
-    row = conn.execute(NEXT_SQL, {"me": user["id"], "mins": get_settings().claim_minutes}).fetchone()
+    row = conn.execute(
+        NEXT_SQL,
+        {"me": user["id"], "mins": get_settings().claim_minutes, "tier": tier}
+    ).fetchone()
     return row if row else Response(status_code=204)
 
 

@@ -38,6 +38,15 @@ def main() -> None:
             with cur.copy(f"copy sentences ({columns}) from stdin with (format csv, header true)") as copy:
                 while chunk := f.read(1 << 16):
                     copy.write(chunk)
+            conn.execute("""
+                update sentences
+                set length_tier = case
+                    when length_words <= 15 then 'short'
+                    when length_words <= 40 then 'medium'
+                    else 'long'
+                end
+                where length_tier is null
+            """)
         print(conn.execute("select count(*) from sentences").fetchone()[0], "sentences imported.")
 
 
