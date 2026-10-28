@@ -94,6 +94,7 @@ create table sentences (
   cost             numeric(5,4) not null check (cost between 0 and 1),
   difficulty_score numeric(5,4) not null check (difficulty_score between 0 and 1),
   difficulty       text not null check (difficulty in ('easy','medium','hard')),
+  length_tier      text check (length_tier in ('short', 'medium', 'long')),
 
   -- soft lock while someone works on it (e.g. 15 min), so two people don't validate the same sentence
   claimed_by       uuid references profiles(id),
@@ -121,6 +122,7 @@ create index on sentences (validated_by);
 create index on sentences (payout_id);
 -- fast "next sentence to validate": highest cost first among unvalidated
 create index sentences_queue on sentences (cost desc) where validated_by is null;
+create index idx_sentences_tier_unvalidated on sentences (length_tier, cost desc) where validated_by is null;
 create index idx_sentences_export_delta on sentences (validated_by, verified, exported_at) where validated_by is not null;
 
 -- Dataset export audit log for AI model training batches
