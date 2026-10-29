@@ -17,6 +17,12 @@ EFFECTIVE_COST_SQL = """case
     else s.cost
 end"""
 
+DYNAMIC_TIER_SQL = """case
+    when s.length_words <= 15 then 'short'
+    when s.length_words <= 40 then 'medium'
+    else 'long'
+end"""
+
 VALIDATION_TARGET = 10_000
 
 NEXT_SQL = """
@@ -25,7 +31,13 @@ with pick as (
   where s.validated_by is null
     and (s.claimed_by is null or s.claim_expires_at < now() or s.claimed_by = %(me)s)
     and not exists (select 1 from sentence_skips k where k.sentence_id = s.id and k.user_id = %(me)s)
-    and (%(tier)s is null or s.length_tier = %(tier)s or (s.claimed_by = %(me)s and s.claim_expires_at >= now()))
+    and (
+      %(tier)s is null
+      or (%(tier)s = 'short' and s.length_words <= 15)
+      or (%(tier)s = 'medium' and s.length_words > 15 and s.length_words <= 40)
+      or (%(tier)s = 'long' and s.length_words > 40)
+      or (s.claimed_by = %(me)s and s.claim_expires_at >= now())
+    )
   order by coalesce(s.claimed_by = %(me)s and s.claim_expires_at >= now(), false) desc,  -- resume my own open claim first
            {effective_cost} desc, s.id
   limit 1
@@ -35,9 +47,11 @@ update sentences s
    set claimed_by = %(me)s, claim_expires_at = now() + make_interval(mins => %(mins)s)
   from pick, reward_settings rs
  where s.id = pick.id
-returning s.id, s.noisy_english, s.attempted, s.difficulty, s.length_tier, s.length_words,
+returning s.id, s.noisy_english, s.attempted, s.difficulty,
+          ({dynamic_tier}) as length_tier,
+          s.length_words,
           greatest(rs.min_reward_ugx, round(({effective_cost}) * rs.rate_ugx))::int as reward_ugx
-""".format(effective_cost=EFFECTIVE_COST_SQL)
+""".format(effective_cost=EFFECTIVE_COST_SQL, dynamic_tier=DYNAMIC_TIER_SQL)
 
 
 def _is_budget_exhausted(conn: psycopg.Connection) -> bool:
