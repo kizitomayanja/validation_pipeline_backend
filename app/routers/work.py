@@ -110,19 +110,22 @@ def next_sentence(
     user: dict = Depends(current_user),
     conn: psycopg.Connection = Depends(get_conn),
 ):
-    # If budget is exhausted, allow completing only an active claim already held by the user
-    has_active_claim = conn.execute(
-        "select 1 from sentences where claimed_by = %s and claim_expires_at >= now() and validated_by is null limit 1",
-        (user["id"],)
-    ).fetchone()
-    if not has_active_claim and _is_budget_exhausted(conn):
-        return Response(status_code=204)
+    try:
+        # If budget is exhausted, allow completing only an active claim already held by the user
+        has_active_claim = conn.execute(
+            "select 1 from sentences where claimed_by = %s and claim_expires_at >= now() and validated_by is null limit 1",
+            (user["id"],)
+        ).fetchone()
+        if not has_active_claim and _is_budget_exhausted(conn):
+            return Response(status_code=204)
 
-    row = conn.execute(
-        NEXT_SQL,
-        {"me": user["id"], "mins": get_settings().claim_minutes, "tier": tier}
-    ).fetchone()
-    return row if row else Response(status_code=204)
+        row = conn.execute(
+            NEXT_SQL,
+            {"me": user["id"], "mins": get_settings().claim_minutes, "tier": tier}
+        ).fetchone()
+        return row if row else Response(status_code=204)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"WORK_NEXT_ERROR: {type(exc).__name__}: {str(exc)}")
 
 
 @router.post("/{sentence_id}/submit", response_model=SubmitOut)

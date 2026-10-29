@@ -27,7 +27,7 @@ for r in (auth.router, me.router, work.router, payouts.router, admin.router, rev
 def health():
     with app.state.pool.connection() as conn:
         conn.execute("select 1")
-    return {"status": "ok"}
+    return {"status": "ok", "version": "v1.0.3-dynamic"}
 
 
 __all__ = ["app"]
