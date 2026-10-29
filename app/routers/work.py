@@ -32,10 +32,10 @@ with pick as (
     and (s.claimed_by is null or s.claim_expires_at < now() or s.claimed_by = %(me)s)
     and not exists (select 1 from sentence_skips k where k.sentence_id = s.id and k.user_id = %(me)s)
     and (
-      %(tier)s is null
-      or (%(tier)s = 'short' and s.length_words <= 15)
-      or (%(tier)s = 'medium' and s.length_words > 15 and s.length_words <= 40)
-      or (%(tier)s = 'long' and s.length_words > 40)
+      %(tier)s::text is null
+      or (%(tier)s::text = 'short' and s.length_words <= 15)
+      or (%(tier)s::text = 'medium' and s.length_words > 15 and s.length_words <= 40)
+      or (%(tier)s::text = 'long' and s.length_words > 40)
       or (s.claimed_by = %(me)s and s.claim_expires_at >= now())
     )
   order by coalesce(s.claimed_by = %(me)s and s.claim_expires_at >= now(), false) desc,  -- resume my own open claim first
