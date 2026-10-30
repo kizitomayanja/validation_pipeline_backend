@@ -98,3 +98,32 @@ DROP INDEX IF EXISTS idx_sentences_tier_unvalidated;
 ALTER TABLE sentences DROP COLUMN IF EXISTS length_tier;
 ```
 This safely removes the column and index in milliseconds with zero data loss to the rest of the database.
+
+---
+
+## 5. Troubleshooting: If Sentences Are Not Being Served (Queue Recovery)
+
+If validators open `/work` and receive `"No sentences are waiting right now"` or `"Campaign budget has been reached"`, run [`migrations/fix_sentence_queue_and_settings.sql`](./migrations/fix_sentence_queue_and_settings.sql) in the **Supabase SQL Editor**:
+
+```sql
+-- 1. Ensure reward_settings configuration exists
+INSERT INTO reward_settings (id, rate_ugx, min_reward_ugx, min_cashout_ugx, max_budget_ugx)
+VALUES (true, 2000, 100, 5000, NULL)
+ON CONFLICT (id) DO UPDATE 
+SET rate_ugx = COALESCE(reward_settings.rate_ugx, 2000),
+    min_reward_ugx = COALESCE(reward_settings.min_reward_ugx, 100),
+    min_cashout_ugx = COALESCE(reward_settings.min_cashout_ugx, 5000);
+
+-- 2. Release any stuck/orphaned claims from earlier sessions
+UPDATE sentences 
+SET claimed_by = NULL, claim_expires_at = NULL 
+WHERE validated_by IS NULL AND (claim_expires_at IS NULL OR claim_expires_at < now());
+
+-- 3. Verify ready sentences by tier
+SELECT COALESCE(length_tier, 'all') AS tier, COUNT(*) AS ready_count 
+FROM sentences 
+WHERE validated_by IS NULL 
+GROUP BY length_tier;
+```
+This guarantees `reward_settings` is actively seeded, clears expired locks, and unblocks the sentence serving pipeline.
+

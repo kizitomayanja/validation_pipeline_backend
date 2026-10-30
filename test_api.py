@@ -688,9 +688,9 @@ def test_length_tier_filtering_and_fields(client):
     sql("truncate sentence_skips, sentences restart identity cascade")
     sql(
         "insert into sentences (source_row, noisy_english, attempted, length_words, cost_raw, cost, difficulty_score, difficulty, length_tier) "
-        "values (101, 'Short clinical prompt', 'hint 1', 8, 0.9, 0.9, 0.9, 'hard', 'short'),"
-        "       (102, 'Medium clinical prompt with multiple symptoms reported by patient', 'hint 2', 25, 0.85, 0.85, 0.85, 'hard', 'medium'),"
-        "       (103, 'A very long in-depth clinical paragraph detailing continuous abdominal pain along with persistent fever and dehydration over past four weeks requiring immediate IV fluids', 'hint 3', 55, 0.95, 0.95, 0.95, 'hard', 'long')"
+        "values (101, 'Short clinical prompt', 'hint 1', 12, 0.9, 0.9, 0.9, 'hard', 'short'),"
+        "       (102, 'Medium clinical prompt with multiple symptoms reported by patient', 'hint 2', 45, 0.85, 0.85, 0.85, 'hard', 'medium'),"
+        "       (103, 'A very long in-depth clinical paragraph detailing continuous abdominal pain along with persistent fever and dehydration over past four weeks requiring immediate IV fluids', 'hint 3', 85, 0.95, 0.95, 0.95, 'hard', 'long')"
     )
 
     # 1. Default request without tier returns highest cost overall (sentence 103, cost 0.95)
@@ -699,7 +699,7 @@ def test_length_tier_filtering_and_fields(client):
     data_default = r_default.json()
     assert data_default["id"] == 1
     assert data_default["length_tier"] == "long"
-    assert data_default["length_words"] == 55
+    assert data_default["length_words"] == 85
 
     # Release claim via skip
     client.post(f"/work/{data_default['id']}/skip", headers=h)
@@ -710,7 +710,7 @@ def test_length_tier_filtering_and_fields(client):
     data_short = r_short.json()
     assert data_short["id"] == 101 or data_short["length_tier"] == "short"
     assert data_short["length_tier"] == "short"
-    assert data_short["length_words"] == 8
+    assert data_short["length_words"] == 12
 
     # Release claim via skip
     client.post(f"/work/{data_short['id']}/skip", headers=h)
@@ -720,9 +720,17 @@ def test_length_tier_filtering_and_fields(client):
     assert r_med.status_code == 200
     data_med = r_med.json()
     assert data_med["length_tier"] == "medium"
-    assert data_med["length_words"] == 25
+    assert data_med["length_words"] == 45
 
-    # 4. Invalid tier returns 422 validation error
+    # Release claim via skip
+    client.post(f"/work/{data_med['id']}/skip", headers=h)
+
+    # 4. Query with tier=all functions like no tier
+    r_all = client.get("/work/next?tier=all", headers=h)
+    assert r_all.status_code == 200
+    assert r_all.json()["id"] in (1, 101, 102, 103)
+
+    # 5. Invalid tier returns 422 validation error
     r_invalid = client.get("/work/next?tier=super_hard", headers=h)
     assert r_invalid.status_code == 422
 
