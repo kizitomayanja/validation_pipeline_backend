@@ -33,7 +33,6 @@ with pick as (
           when s.length_words <= 70 then 'medium'
           else 'long'
       end) = %(tier)s::text
-      or (s.claimed_by = %(me)s and s.claim_expires_at >= now())
     )
   order by coalesce(s.claimed_by = %(me)s and s.claim_expires_at >= now(), false) desc,  -- resume my own open claim first
            {effective_cost} desc, s.id
@@ -136,6 +135,22 @@ def next_sentence(
             raise HTTPException(422, f"Invalid tier '{tier}'. Choose from 'short', 'medium', 'long', or 'all'.")
 
     try:
+        # If user explicitly requested a specific tier, release any open unvalidated claim on a sentence of a different tier
+        if normalized_tier:
+            conn.execute(
+                """update sentences
+                      set claimed_by = null, claim_expires_at = null
+                    where claimed_by = %(me)s
+                      and claim_expires_at >= now()
+                      and validated_by is null
+                      and coalesce(length_tier, case
+                              when length_words <= 30 then 'short'
+                              when length_words <= 70 then 'medium'
+                              else 'long'
+                          end) != %(tier)s""",
+                {"me": user["id"], "tier": normalized_tier}
+            )
+
         # If budget is exhausted, allow completing only an active claim already held by the user
         has_active_claim = conn.execute(
             "select 1 from sentences where claimed_by = %s and claim_expires_at >= now() and validated_by is null limit 1",

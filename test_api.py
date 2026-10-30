@@ -734,3 +734,69 @@ def test_length_tier_filtering_and_fields(client):
     r_invalid = client.get("/work/next?tier=super_hard", headers=h)
     assert r_invalid.status_code == 422
 
+
+
+def test_tier_switching_without_manual_skip_e2e(client):
+    from conftest import sql
+    user_h, user_info = make_user(client, "mood_switcher@example.com")
+    other_h, _ = make_user(client, "second_validator@example.com")
+
+    # Reset queue with known short, medium, and long sentences
+    sql("truncate sentence_skips, sentences restart identity cascade")
+    sql(
+        "insert into sentences (source_row, noisy_english, attempted, length_words, cost_raw, cost, difficulty_score, difficulty, length_tier) "
+        "values (201, 'Short prompt for headache', 'hint 1', 15, 0.8, 0.8, 0.8, 'easy', 'short'),"
+        "       (202, 'Medium prompt clinical consultation describing acute respiratory discomfort and high fever', 'hint 2', 45, 0.85, 0.85, 0.85, 'hard', 'medium'),"
+        "       (203, 'Long detailed triage monologue detailing chronic cardiovascular conditions with pedal edema lasting more than thirty days needing urgent ultrasound and ECG analysis', 'hint 3', 88, 0.9, 0.9, 0.9, 'hard', 'long')"
+    )
+
+    # 1. User requests short sentence
+    r_short = client.get("/work/next?tier=short", headers=user_h)
+    assert r_short.status_code == 200
+    s_short = r_short.json()
+    assert s_short["length_tier"] == "short"
+    assert s_short["id"] == 1
+
+    # Verify sentence 1 is actively claimed by this user
+    rows = sql("select id, claimed_by, claim_expires_at > now() as active from sentences where id = 1", fetch=True)
+    assert rows[0][1] == user_info["id"]
+    assert rows[0][2] is True
+
+    # 2. CRITICAL BUG REGRESSION: User switches mood to 'medium' WITHOUT skipping sentence 1
+    r_med = client.get("/work/next?tier=medium", headers=user_h)
+    assert r_med.status_code == 200
+    s_med = r_med.json()
+    assert s_med["length_tier"] == "medium"
+    assert s_med["id"] == 2
+    assert s_med["id"] != s_short["id"], "Switching tier must NOT return the previous claimed sentence of a different tier"
+
+    # Verify sentence 1 claim was released so another worker can take it
+    s1_status = sql("select id, claimed_by, claim_expires_at from sentences where id = 1", fetch=True)
+    assert s1_status[0][1] is None, "Previous disparate claim must be released to pool"
+    assert s1_status[0][2] is None
+
+    # Verify other validator can now immediately claim sentence 1
+    other_r = client.get("/work/next?tier=short", headers=other_h)
+    assert other_r.status_code == 200
+    assert other_r.json()["id"] == 1
+
+    # 3. Verify requesting the same tier ('medium') again resumes the existing active claim
+    r_med_resume = client.get("/work/next?tier=medium", headers=user_h)
+    assert r_med_resume.status_code == 200
+    assert r_med_resume.json()["id"] == 2
+
+    # 4. User switches to 'long' without skipping medium
+    r_long = client.get("/work/next?tier=long", headers=user_h)
+    assert r_long.status_code == 200
+    s_long = r_long.json()
+    assert s_long["length_tier"] == "long"
+    assert s_long["id"] == 3
+
+    # Medium claim was released
+    s2_status = sql("select id, claimed_by from sentences where id = 2", fetch=True)
+    assert s2_status[0][1] is None
+
+    # 5. User switches back to 'all' tasks - should resume active 'long' claim without releasing it
+    r_all = client.get("/work/next?tier=all", headers=user_h)
+    assert r_all.status_code == 200
+    assert r_all.json()["id"] == 3
