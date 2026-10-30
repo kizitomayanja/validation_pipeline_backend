@@ -27,7 +27,8 @@ def cash_out(body: PayoutIn, user: dict = Depends(current_user), conn: psycopg.C
         raise HTTPException(409, "You already have a cash-out waiting for payment.")
     available = conn.execute("select coalesce(sum(reward_ugx), 0)::int as n from sentences where validated_by = %s and verified = true and payout_id is null",
                              (user["id"],)).fetchone()["n"]
-    minimum = conn.execute("select min_cashout_ugx from reward_settings").fetchone()["min_cashout_ugx"]
+    rs_row = conn.execute("select min_cashout_ugx from reward_settings limit 1").fetchone()
+    minimum = rs_row["min_cashout_ugx"] if (rs_row and rs_row["min_cashout_ugx"] is not None) else 5000
     if available < minimum:
         raise HTTPException(400, f"You need at least UGX {minimum:,} to cash out.")
 

@@ -16,10 +16,40 @@ def me(user: dict = Depends(current_user)):
 
 @router.get("/balance", response_model=BalanceOut)
 def balance(user: dict = Depends(current_user), conn: psycopg.Connection = Depends(get_conn)):
-    return conn.execute(
-        """select b.total_earned_ugx, b.available_ugx, b.pending_ugx, b.paid_out_ugx, b.validated_count,
-                  b.verified_count, b.pending_review_count, b.pending_review_ugx, rs.min_cashout_ugx
-           from user_balances b cross join reward_settings rs where b.user_id = %s""", (user["id"],)).fetchone()
+    row = conn.execute(
+        """with rs_cfg as (
+               select coalesce(min_cashout_ugx, 5000) as min_cashout_ugx
+               from (select min_cashout_ugx from reward_settings limit 1) sub
+               union all
+               select 5000 as min_cashout_ugx
+               limit 1
+           )
+           select coalesce(b.total_earned_ugx, 0) as total_earned_ugx,
+                  coalesce(b.available_ugx, 0) as available_ugx,
+                  coalesce(b.pending_ugx, 0) as pending_ugx,
+                  coalesce(b.paid_out_ugx, 0) as paid_out_ugx,
+                  coalesce(b.validated_count, 0) as validated_count,
+                  coalesce(b.verified_count, 0) as verified_count,
+                  coalesce(b.pending_review_count, 0) as pending_review_count,
+                  coalesce(b.pending_review_ugx, 0) as pending_review_ugx,
+                  rs_cfg.min_cashout_ugx
+           from rs_cfg
+           left join user_balances b on b.user_id = %s""",
+        (user["id"],),
+    ).fetchone()
+    if not row:
+        return BalanceOut(
+            total_earned_ugx=0,
+            available_ugx=0,
+            pending_ugx=0,
+            paid_out_ugx=0,
+            validated_count=0,
+            verified_count=0,
+            pending_review_count=0,
+            pending_review_ugx=0,
+            min_cashout_ugx=5000,
+        )
+    return row
 
 
 _METHOD_COLS = "id, provider, phone_number, account_name, is_default"

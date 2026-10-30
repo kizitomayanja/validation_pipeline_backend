@@ -28,13 +28,16 @@ def list_tickets(
 
     query = """
         select
-            t.id, t.author_id, p.full_name as author_name, p.email as author_email, p.role as author_role,
+            t.id, t.author_id,
+            coalesce(p.full_name, 'Unknown') as author_name,
+            coalesce(p.email, '') as author_email,
+            coalesce(p.role, 'validator') as author_role,
             t.category, t.target_role, t.subject, t.status, t.sentence_id, t.payout_id,
             t.created_at, t.updated_at,
             count(m.id) as message_count,
             coalesce((select message from ticket_messages where ticket_id = t.id order by created_at desc limit 1), '') as last_message_preview
         from support_tickets t
-        join profiles p on p.id = t.author_id
+        left join profiles p on p.id = t.author_id
         left join ticket_messages m on m.ticket_id = t.id
     """
 
@@ -74,8 +77,15 @@ def list_tickets(
     if conditions:
         query += " where " + " and ".join(conditions)
 
-    query += " group by t.id, p.full_name, p.email, p.role order by t.updated_at desc"
-    return conn.execute(query, tuple(params)).fetchall()
+    query += """ group by t.id, t.author_id, p.full_name, p.email, p.role,
+                          t.category, t.target_role, t.subject, t.status, t.sentence_id, t.payout_id,
+                          t.created_at, t.updated_at
+                 order by t.updated_at desc"""
+
+    try:
+        return conn.execute(query, tuple(params)).fetchall()
+    except psycopg.errors.UndefinedTable:
+        return []
 
 
 @router.post("", response_model=TicketDetailOut, status_code=201)
@@ -86,30 +96,33 @@ def create_ticket(
 ):
     target_role = _determine_target_role(body.category)
 
-    ticket = conn.execute(
-        """
-        insert into support_tickets (author_id, category, target_role, subject, sentence_id, payout_id, status)
-        values (%s, %s, %s, %s, %s, %s, 'open')
-        returning id, author_id, category, target_role, subject, status, sentence_id, payout_id, created_at, updated_at
-        """,
-        (user["id"], body.category, target_role, body.subject, body.sentence_id, body.payout_id),
-    ).fetchone()
+    try:
+        ticket = conn.execute(
+            """
+            insert into support_tickets (author_id, category, target_role, subject, sentence_id, payout_id, status)
+            values (%s, %s, %s, %s, %s, %s, 'open')
+            returning id, author_id, category, target_role, subject, status, sentence_id, payout_id, created_at, updated_at
+            """,
+            (user["id"], body.category, target_role, body.subject, body.sentence_id, body.payout_id),
+        ).fetchone()
 
-    msg = conn.execute(
-        """
-        insert into ticket_messages (ticket_id, sender_id, message)
-        values (%s, %s, %s)
-        returning id, ticket_id, sender_id, message, created_at
-        """,
-        (ticket["id"], user["id"], body.message),
-    ).fetchone()
+        msg = conn.execute(
+            """
+            insert into ticket_messages (ticket_id, sender_id, message)
+            values (%s, %s, %s)
+            returning id, ticket_id, sender_id, message, created_at
+            """,
+            (ticket["id"], user["id"], body.message),
+        ).fetchone()
+    except psycopg.errors.UndefinedTable:
+        raise HTTPException(503, "Support tickets database tables have not been created yet in Supabase. Please run migrations/create_support_tickets_tables.sql.")
 
     msg_out = TicketMessageOut(
         id=msg["id"],
         ticket_id=msg["ticket_id"],
         sender_id=msg["sender_id"],
-        sender_name=user["full_name"],
-        sender_role=user["role"],
+        sender_name=user.get("full_name") or "User",
+        sender_role=user.get("role") or "validator",
         message=msg["message"],
         created_at=msg["created_at"],
     )
@@ -117,9 +130,9 @@ def create_ticket(
     return TicketDetailOut(
         id=ticket["id"],
         author_id=ticket["author_id"],
-        author_name=user["full_name"],
-        author_email=user["email"],
-        author_role=user["role"],
+        author_name=user.get("full_name") or "User",
+        author_email=user.get("email") or "",
+        author_role=user.get("role") or "validator",
         category=ticket["category"],
         target_role=ticket["target_role"],
         subject=ticket["subject"],
@@ -140,18 +153,24 @@ def get_ticket(
     user: dict = Depends(current_user),
     conn: psycopg.Connection = Depends(get_conn),
 ):
-    ticket = conn.execute(
-        """
-        select
-            t.id, t.author_id, p.full_name as author_name, p.email as author_email, p.role as author_role,
-            t.category, t.target_role, t.subject, t.status, t.sentence_id, t.payout_id,
-            t.created_at, t.updated_at
-        from support_tickets t
-        join profiles p on p.id = t.author_id
-        where t.id = %s
-        """,
-        (ticket_id,),
-    ).fetchone()
+    try:
+        ticket = conn.execute(
+            """
+            select
+                t.id, t.author_id,
+                coalesce(p.full_name, 'Unknown') as author_name,
+                coalesce(p.email, '') as author_email,
+                coalesce(p.role, 'validator') as author_role,
+                t.category, t.target_role, t.subject, t.status, t.sentence_id, t.payout_id,
+                t.created_at, t.updated_at
+            from support_tickets t
+            left join profiles p on p.id = t.author_id
+            where t.id = %s
+            """,
+            (ticket_id,),
+        ).fetchone()
+    except psycopg.errors.UndefinedTable:
+        raise HTTPException(503, "Support tickets database tables have not been created yet.")
 
     if not ticket:
         raise HTTPException(404, "Inquiry not found.")
@@ -165,9 +184,12 @@ def get_ticket(
 
     messages_raw = conn.execute(
         """
-        select m.id, m.ticket_id, m.sender_id, p.full_name as sender_name, p.role as sender_role, m.message, m.created_at
+        select m.id, m.ticket_id, m.sender_id,
+               coalesce(p.full_name, 'Unknown') as sender_name,
+               coalesce(p.role, 'validator') as sender_role,
+               m.message, m.created_at
         from ticket_messages m
-        join profiles p on p.id = m.sender_id
+        left join profiles p on p.id = m.sender_id
         where m.ticket_id = %s
         order by m.created_at asc
         """,
@@ -191,7 +213,11 @@ def add_ticket_message(
     user: dict = Depends(current_user),
     conn: psycopg.Connection = Depends(get_conn),
 ):
-    ticket = conn.execute("select id, author_id, target_role, status from support_tickets where id = %s", (ticket_id,)).fetchone()
+    try:
+        ticket = conn.execute("select id, author_id, target_role, status from support_tickets where id = %s", (ticket_id,)).fetchone()
+    except psycopg.errors.UndefinedTable:
+        raise HTTPException(503, "Support tickets database tables have not been created yet.")
+
     if not ticket:
         raise HTTPException(404, "Inquiry not found.")
 
@@ -218,8 +244,8 @@ def add_ticket_message(
         id=msg["id"],
         ticket_id=msg["ticket_id"],
         sender_id=msg["sender_id"],
-        sender_name=user["full_name"],
-        sender_role=user["role"],
+        sender_name=user.get("full_name") or "User",
+        sender_role=user.get("role") or "validator",
         message=msg["message"],
         created_at=msg["created_at"],
     )
@@ -232,7 +258,11 @@ def update_ticket_status(
     user: dict = Depends(current_user),
     conn: psycopg.Connection = Depends(get_conn),
 ):
-    ticket = conn.execute("select id, author_id, target_role from support_tickets where id = %s", (ticket_id,)).fetchone()
+    try:
+        ticket = conn.execute("select id, author_id, target_role from support_tickets where id = %s", (ticket_id,)).fetchone()
+    except psycopg.errors.UndefinedTable:
+        raise HTTPException(503, "Support tickets database tables have not been created yet.")
+
     if not ticket:
         raise HTTPException(404, "Inquiry not found.")
 
@@ -244,16 +274,21 @@ def update_ticket_status(
     return conn.execute(
         """
         select
-            t.id, t.author_id, p.full_name as author_name, p.email as author_email, p.role as author_role,
+            t.id, t.author_id,
+            coalesce(p.full_name, 'Unknown') as author_name,
+            coalesce(p.email, '') as author_email,
+            coalesce(p.role, 'validator') as author_role,
             t.category, t.target_role, t.subject, t.status, t.sentence_id, t.payout_id,
             t.created_at, t.updated_at,
             count(m.id) as message_count,
             coalesce((select message from ticket_messages where ticket_id = t.id order by created_at desc limit 1), '') as last_message_preview
         from support_tickets t
-        join profiles p on p.id = t.author_id
+        left join profiles p on p.id = t.author_id
         left join ticket_messages m on m.ticket_id = t.id
         where t.id = %s
-        group by t.id, p.full_name, p.email, p.role
+        group by t.id, t.author_id, p.full_name, p.email, p.role,
+                 t.category, t.target_role, t.subject, t.status, t.sentence_id, t.payout_id,
+                 t.created_at, t.updated_at
         """,
         (ticket_id,),
     ).fetchone()
