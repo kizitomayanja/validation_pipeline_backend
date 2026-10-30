@@ -13,8 +13,8 @@ CHECK (length_tier IN ('short', 'medium', 'long'));
 -- long: > 40 words
 UPDATE sentences
 SET length_tier = CASE
-    WHEN length_words <= 15 THEN 'short'
-    WHEN length_words <= 40 THEN 'medium'
+    WHEN length_words <= 30 THEN 'short'
+    WHEN length_words <= 70 THEN 'medium'
     ELSE 'long'
 END
 WHERE length_tier IS NULL;
