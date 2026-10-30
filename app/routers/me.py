@@ -1,3 +1,4 @@
+import uuid
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Response
 
@@ -16,40 +17,59 @@ def me(user: dict = Depends(current_user)):
 
 @router.get("/balance", response_model=BalanceOut)
 def balance(user: dict = Depends(current_user), conn: psycopg.Connection = Depends(get_conn)):
-    row = conn.execute(
-        """with rs_cfg as (
-               select coalesce(min_cashout_ugx, 5000) as min_cashout_ugx
-               from (select min_cashout_ugx from reward_settings limit 1) sub
-               union all
-               select 5000 as min_cashout_ugx
-               limit 1
-           )
-           select coalesce(b.total_earned_ugx, 0) as total_earned_ugx,
-                  coalesce(b.available_ugx, 0) as available_ugx,
-                  coalesce(b.pending_ugx, 0) as pending_ugx,
-                  coalesce(b.paid_out_ugx, 0) as paid_out_ugx,
-                  coalesce(b.validated_count, 0) as validated_count,
-                  coalesce(b.verified_count, 0) as verified_count,
-                  coalesce(b.pending_review_count, 0) as pending_review_count,
-                  coalesce(b.pending_review_ugx, 0) as pending_review_ugx,
-                  rs_cfg.min_cashout_ugx
-           from rs_cfg
-           left join user_balances b on b.user_id = %s""",
-        (user["id"],),
-    ).fetchone()
-    if not row:
-        return BalanceOut(
-            total_earned_ugx=0,
-            available_ugx=0,
-            pending_ugx=0,
-            paid_out_ugx=0,
-            validated_count=0,
-            verified_count=0,
-            pending_review_count=0,
-            pending_review_ugx=0,
-            min_cashout_ugx=5000,
+    query = """
+        with rs_cfg as (
+            select coalesce(min_cashout_ugx, 5000) as min_cashout_ugx
+            from (select min_cashout_ugx from reward_settings limit 1) sub
+            union all
+            select 5000 as min_cashout_ugx
+            limit 1
+        ),
+        stats as (
+            select
+                coalesce(sum(s.reward_ugx) filter (where s.verified = true), 0)::int as total_earned_ugx,
+                coalesce(sum(s.reward_ugx) filter (where s.verified = true and s.payout_id is null), 0)::int as available_ugx,
+                coalesce(sum(s.reward_ugx) filter (where po.status = 'pending'), 0)::int as pending_ugx,
+                coalesce(sum(s.reward_ugx) filter (where po.status = 'paid'), 0)::int as paid_out_ugx,
+                count(s.id) filter (where s.validated_by is not null)::int as validated_count,
+                count(s.id) filter (where s.verified = true)::int as verified_count,
+                count(s.id) filter (where s.validated_by is not null and s.verified = false)::int as pending_review_count,
+                coalesce(sum(s.reward_ugx) filter (where s.validated_by is not null and s.verified = false), 0)::int as pending_review_ugx
+            from sentences s
+            left join payouts po on po.id = s.payout_id
+            where s.validated_by = %(uid)s
         )
-    return row
+        select
+            coalesce(stats.total_earned_ugx, 0) as total_earned_ugx,
+            coalesce(stats.available_ugx, 0) as available_ugx,
+            coalesce(stats.pending_ugx, 0) as pending_ugx,
+            coalesce(stats.paid_out_ugx, 0) as paid_out_ugx,
+            coalesce(stats.validated_count, 0) as validated_count,
+            coalesce(stats.verified_count, 0) as verified_count,
+            coalesce(stats.pending_review_count, 0) as pending_review_count,
+            coalesce(stats.pending_review_ugx, 0) as pending_review_ugx,
+            rs_cfg.min_cashout_ugx
+        from rs_cfg
+        cross join stats
+    """
+    try:
+        row = conn.execute(query, {"uid": user["id"]}).fetchone()
+        if row:
+            return row
+    except Exception:
+        pass
+
+    return BalanceOut(
+        total_earned_ugx=0,
+        available_ugx=0,
+        pending_ugx=0,
+        paid_out_ugx=0,
+        validated_count=0,
+        verified_count=0,
+        pending_review_count=0,
+        pending_review_ugx=0,
+        min_cashout_ugx=5000,
+    )
 
 
 _METHOD_COLS = "id, provider, phone_number, account_name, is_default"
@@ -57,8 +77,13 @@ _METHOD_COLS = "id, provider, phone_number, account_name, is_default"
 
 @router.get("/payment-methods", response_model=list[MethodOut])
 def list_methods(user: dict = Depends(current_user), conn: psycopg.Connection = Depends(get_conn)):
-    return conn.execute(f"select {_METHOD_COLS} from payment_methods where user_id = %s and deleted_at is null order by created_at",
-                        (user["id"],)).fetchall()
+    try:
+        return conn.execute(
+            f"select {_METHOD_COLS} from payment_methods where user_id = %s and deleted_at is null order by created_at",
+            (user["id"],),
+        ).fetchall()
+    except psycopg.errors.UndefinedTable:
+        return []
 
 
 @router.post("/payment-methods", response_model=MethodOut, status_code=201)
@@ -88,8 +113,8 @@ def delete_method(method_id: str, user: dict = Depends(current_user), conn: psyc
         raise HTTPException(404, "Mobile money account not found.")
     # keep exactly one default: promote the oldest remaining account if none is left
     conn.execute(
-        """update payment_methods set is_default = true where id = (
-             select id from payment_methods where user_id = %s and deleted_at is null order by created_at limit 1)
-           and not exists (select 1 from payment_methods where user_id = %s and deleted_at is null and is_default)""",
+        "with oldest as (select id from payment_methods where user_id = %s and deleted_at is null order by created_at limit 1) "
+        "update payment_methods set is_default = true from oldest "
+        "where payment_methods.id = oldest.id and not exists (select 1 from payment_methods where user_id = %s and is_default = true and deleted_at is null)",
         (user["id"], user["id"]))
     return Response(status_code=204)

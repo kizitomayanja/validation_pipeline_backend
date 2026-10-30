@@ -11,7 +11,10 @@ _COLS = "id, amount_ugx, status, requested_at, provider, phone_number, account_n
 
 @router.get("", response_model=list[PayoutOut])
 def list_payouts(user: dict = Depends(current_user), conn: psycopg.Connection = Depends(get_conn)):
-    return conn.execute(f"select {_COLS} from payouts where user_id = %s order by requested_at desc", (user["id"],)).fetchall()
+    try:
+        return conn.execute(f"select {_COLS} from payouts where user_id = %s order by requested_at desc", (user["id"],)).fetchall()
+    except psycopg.errors.UndefinedTable:
+        return []
 
 
 @router.post("", response_model=PayoutOut, status_code=201)
