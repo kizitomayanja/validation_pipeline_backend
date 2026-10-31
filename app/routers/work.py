@@ -17,6 +17,17 @@ EFFECTIVE_COST_SQL = """case
     else s.cost
 end"""
 
+TIER_MULTIPLIER_SQL = """case coalesce(s.length_tier, case
+    when s.length_words <= 30 then 'short'
+    when s.length_words <= 70 then 'medium'
+    else 'long'
+end)
+    when 'short' then 0.75
+    when 'medium' then 1.25
+    when 'long' then 2.00
+    else 1.00
+end"""
+
 VALIDATION_TARGET = 10_000
 
 NEXT_SQL = """
@@ -60,8 +71,8 @@ returning s.id, s.noisy_english, s.attempted, s.difficulty,
               else 'long'
           end) as length_tier,
           s.length_words,
-          greatest(rs_cfg.min_reward_ugx, round(({effective_cost}) * rs_cfg.rate_ugx))::int as reward_ugx
-""".format(effective_cost=EFFECTIVE_COST_SQL)
+          greatest(rs_cfg.min_reward_ugx, round(({effective_cost}) * rs_cfg.rate_ugx * ({tier_multiplier})))::int as reward_ugx
+""".format(effective_cost=EFFECTIVE_COST_SQL, tier_multiplier=TIER_MULTIPLIER_SQL)
 
 
 def _is_budget_exhausted(conn: psycopg.Connection) -> bool:
@@ -197,10 +208,10 @@ def submit(sentence_id: int, body: SubmitIn, user: dict = Depends(current_user),
            )
            update sentences s
               set clean_lug = %s, validated_by = %s, validated_at = now(), claimed_by = null, claim_expires_at = null,
-                    reward_ugx = greatest(rs_cfg.min_reward_ugx, round(({effective_cost}) * rs_cfg.rate_ugx))::int
+                    reward_ugx = greatest(rs_cfg.min_reward_ugx, round(({effective_cost}) * rs_cfg.rate_ugx * ({tier_multiplier})))::int
              from rs_cfg
             where s.id = %s and s.validated_by is null and s.claimed_by = %s
-        returning s.reward_ugx""".format(effective_cost=EFFECTIVE_COST_SQL),
+        returning s.reward_ugx""".format(effective_cost=EFFECTIVE_COST_SQL, tier_multiplier=TIER_MULTIPLIER_SQL),
         (body.clean_lug, user["id"], sentence_id, user["id"])).fetchone()
     if row is None:
         raise HTTPException(409, "This sentence is no longer assigned to you. Load the next one.")

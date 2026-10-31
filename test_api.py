@@ -142,13 +142,13 @@ def test_hard_sentence_with_more_than_two_full_stops_has_doubled_cost(client):
     sql("update sentences set noisy_english = 'First. Second. Third.', cost = 0.4 where id = 1")
     sentence = client.get("/work/next", headers=h).json()
     assert sentence["id"] == 1
-    assert sentence["reward_ugx"] == 1600
+    assert sentence["reward_ugx"] == 1200
     submitted = client.post(
         "/work/1/submit",
         headers=h,
         json={"clean_lug": "ok"},
     )
-    assert submitted.json()["reward_ugx"] == 1600
+    assert submitted.json()["reward_ugx"] == 1200
     assert float(sql("select cost from sentences where id = 1", fetch=True)[0][0]) == 0.4
 
 
@@ -158,13 +158,13 @@ def test_hard_sentence_with_two_full_stops_keeps_original_cost(client):
     sql("update sentences set noisy_english = 'First. Second.', cost = 0.4 where id = 1")
     sentence = client.get("/work/next", headers=h).json()
     assert sentence["id"] == 1
-    assert sentence["reward_ugx"] == 800
+    assert sentence["reward_ugx"] == 600
 
 
 def test_next_serves_highest_cost_and_resumes_the_same_claim(client):
     h, _ = make_user(client)
     s = client.get("/work/next", headers=h).json()
-    assert (s["id"], s["reward_ugx"], s["difficulty"]) == (1, 1800, "hard")
+    assert (s["id"], s["reward_ugx"], s["difficulty"]) == (1, 1350, "hard")
     assert client.get("/work/next", headers=h).json()["id"] == 1   # page refresh gets the same sentence
 
 
@@ -190,9 +190,9 @@ def test_submit_stores_translation_and_server_side_reward(client):
     h, _ = make_user(client)
     s = client.get("/work/next", headers=h).json()
     r = client.post(f"/work/{s['id']}/submit", headers=h, json={"clean_lug": "  Olina okuziyira?  ", "reward_ugx": 999999})
-    assert r.json() == {"reward_ugx": 1800}   # client-supplied reward is ignored
+    assert r.json() == {"reward_ugx": 1350}   # client-supplied reward is ignored
     row = sql("select clean_lug, attempted, reward_ugx, validated_by is not null as v, claimed_by from sentences where id = 1", fetch=True)[0]
-    assert row == ("Olina okuziyira?", "attempt 1", 1800, True, None)   # trimmed; original `attempted` untouched
+    assert row == ("Olina okuziyira?", "attempt 1", 1350, True, None)   # trimmed; original `attempted` untouched
     assert client.post("/work/1/submit", headers=h, json={"clean_lug": "again"}).status_code == 409
     assert client.post(f"/work/{s['id']}/submit", headers=h, json={"clean_lug": "   "}).status_code == 422
 
@@ -249,16 +249,16 @@ def test_balance_and_full_cash_out_lifecycle(client, admin):
     h, _ = make_user(client)
     assert client.get("/me/balance", headers=h).json() == dict(total_earned_ugx=0, available_ugx=0, pending_ugx=0, paid_out_ugx=0, validated_count=0, min_cashout_ugx=1000)
     earned = earn(client, h, 2)
-    assert earned == 2800
-    assert client.get("/me/balance", headers=h).json()["available_ugx"] == 2800
+    assert earned == 2100
+    assert client.get("/me/balance", headers=h).json()["available_ugx"] == 2100
 
     assert client.post("/payouts", headers=h, json={"payment_method_id": "00000000-0000-0000-0000-000000000000"}).status_code == 400
     m = add_method(client, h).json()
     r = client.post("/payouts", headers=h, json={"payment_method_id": m["id"]})
-    assert r.status_code == 201 and r.json()["amount_ugx"] == 2800 and r.json()["status"] == "pending"
+    assert r.status_code == 201 and r.json()["amount_ugx"] == 2100 and r.json()["status"] == "pending"
     assert r.json()["account_name"] == "Ann N. Validator"
     b = client.get("/me/balance", headers=h).json()
-    assert (b["total_earned_ugx"], b["available_ugx"], b["pending_ugx"], b["paid_out_ugx"]) == (2800, 0, 2800, 0)
+    assert (b["total_earned_ugx"], b["available_ugx"], b["pending_ugx"], b["paid_out_ugx"]) == (2100, 0, 2100, 0)
     assert client.post("/payouts", headers=h, json={"payment_method_id": m["id"]}).status_code == 409   # one pending at a time
 
     # editing/removing the method later doesn't change the payout record
@@ -274,7 +274,7 @@ def test_balance_and_full_cash_out_lifecycle(client, admin):
     assert client.post(f"/admin/payouts/{pid}/mark-paid", headers=admin, json={"provider_reference": "MP999"}).status_code == 409
     assert sql("select count(*) from sentences where paid_status and paid_at is not null and payout_id = %s", (pid,), fetch=True)[0][0] == 2
     b = client.get("/me/balance", headers=h).json()
-    assert (b["total_earned_ugx"], b["available_ugx"], b["pending_ugx"], b["paid_out_ugx"]) == (2800, 0, 0, 2800)
+    assert (b["total_earned_ugx"], b["available_ugx"], b["pending_ugx"], b["paid_out_ugx"]) == (2100, 0, 0, 2100)
 
 
 def test_cash_out_rules_and_rejection_releases_money(client, admin):
@@ -282,7 +282,7 @@ def test_cash_out_rules_and_rejection_releases_money(client, admin):
     m = add_method(client, h).json()
     r = client.post("/payouts", headers=h, json={"payment_method_id": m["id"]})
     assert r.status_code == 400 and "UGX 1,000" in r.json()["detail"]
-    earn(client, h, 1)   # 1800
+    earn(client, h, 1)   # 1350
     other, _ = make_user(client, "b@example.com")
     om = add_method(client, other, "0701234567", "Bee", "airtel").json()
     assert client.post("/payouts", headers=h, json={"payment_method_id": om["id"]}).status_code == 400   # not your account
@@ -290,7 +290,7 @@ def test_cash_out_rules_and_rejection_releases_money(client, admin):
     rej = client.post(f"/admin/payouts/{pid}/reject", headers=admin, json={"reason": "Name does not match"})
     assert rej.status_code == 200 and rej.json()["status"] == "rejected"
     b = client.get("/me/balance", headers=h).json()
-    assert (b["available_ugx"], b["pending_ugx"], b["paid_out_ugx"]) == (1800, 0, 0)   # released
+    assert (b["available_ugx"], b["pending_ugx"], b["paid_out_ugx"]) == (1350, 0, 0)   # released
     assert client.post("/payouts", headers=h, json={"payment_method_id": m["id"]}).status_code == 201   # can ask again
     assert client.get("/admin/payouts", headers=admin).json()[0]["status"] in ("rejected", "pending")
     assert client.get("/admin/payouts", headers=h).status_code == 403
@@ -303,7 +303,7 @@ def test_concurrent_cash_outs_pay_out_exactly_once(client):
     with ThreadPoolExecutor(8) as ex:
         codes = list(ex.map(lambda _: client.post("/payouts", headers=h, json={"payment_method_id": m["id"]}).status_code, range(8)))
     assert sorted(codes) == [201] + [409] * 7
-    assert sql("select count(*), sum(amount_ugx) from payouts", fetch=True)[0] == (1, 2800)
+    assert sql("select count(*), sum(amount_ugx) from payouts", fetch=True)[0] == (1, 2100)
 
 
 def test_concurrent_next_gives_each_validator_a_different_sentence(client):
@@ -415,7 +415,7 @@ def test_admin_overview_metrics(client, admin):
     assert ov_after["validated_sentences"] == 1
     assert ov_after["unvalidated_sentences"] == 3
     assert ov_after["completion_percentage"] == 25.0
-    assert ov_after["total_earned_ugx"] == 1800
+    assert ov_after["total_earned_ugx"] == 1350
 
     # Non-admin rejected
     assert client.get("/admin/overview", headers=val_h).status_code == 403
@@ -579,9 +579,9 @@ def test_admin_export_stats_and_csv_download(client, admin):
 def test_custom_partial_cashout_and_bounds(client, admin):
     h, _ = make_user(client, "partial_cashout@example.com")
     m = add_method(client, h).json()
-    earn(client, h, 2)  # earns 2800
+    earn(client, h, 2)  # earns 2100
     bal = client.get("/me/balance", headers=h).json()
-    assert bal["available_ugx"] == 2800
+    assert bal["available_ugx"] == 2100
 
     # Below minimum (500 < 1000)
     r_low = client.post("/payouts", headers=h, json={"payment_method_id": m["id"], "amount_ugx": 500})
@@ -599,7 +599,7 @@ def test_custom_partial_cashout_and_bounds(client, admin):
 
     # Remaining balance check
     b = client.get("/me/balance", headers=h).json()
-    assert b["available_ugx"] == 1800
+    assert b["available_ugx"] == 1100
     assert b["pending_ugx"] == 1000
 
 
@@ -800,3 +800,41 @@ def test_tier_switching_without_manual_skip_e2e(client):
     r_all = client.get("/work/next?tier=all", headers=user_h)
     assert r_all.status_code == 200
     assert r_all.json()["id"] == 3
+
+
+def test_option_b_calibrated_tier_reward_multipliers(client):
+    from conftest import sql
+    h, _ = make_user(client, "tier_pricing_user@example.com")
+    sql("update reward_settings set rate_ugx = 200, min_reward_ugx = 100")
+    sql("truncate sentence_skips, sentences restart identity cascade")
+
+    # Insert 3 sentences with identical base cost = 1.0 (one in each tier)
+    sql(
+        "insert into sentences (source_row, noisy_english, attempted, length_words, cost_raw, cost, difficulty_score, difficulty, length_tier) "
+        "values (401, 'Short prompt for headache', 'hint 1', 15, 1.0, 1.0, 1.0, 'hard', 'short'),"
+        "       (402, 'Medium prompt clinical consultation describing acute respiratory discomfort and high fever', 'hint 2', 45, 1.0, 1.0, 1.0, 'hard', 'medium'),"
+        "       (403, 'Long detailed triage monologue detailing chronic cardiovascular conditions with pedal edema lasting more than thirty days needing urgent ultrasound and ECG analysis', 'hint 3', 88, 1.0, 1.0, 1.0, 'hard', 'long')"
+    )
+
+    # 1. Short sentence pays: round(1.0 * 200 * 0.75) = 150 UGX
+    r_short = client.get("/work/next?tier=short", headers=h)
+    assert r_short.status_code == 200
+    assert r_short.json()["reward_ugx"] == 150
+    assert r_short.json()["length_tier"] == "short"
+
+    # 2. Medium sentence pays: round(1.0 * 200 * 1.25) = 250 UGX
+    r_med = client.get("/work/next?tier=medium", headers=h)
+    assert r_med.status_code == 200
+    assert r_med.json()["reward_ugx"] == 250
+    assert r_med.json()["length_tier"] == "medium"
+
+    # 3. Long sentence pays: round(1.0 * 200 * 2.00) = 400 UGX
+    r_long = client.get("/work/next?tier=long", headers=h)
+    assert r_long.status_code == 200
+    assert r_long.json()["reward_ugx"] == 400
+    assert r_long.json()["length_tier"] == "long"
+
+    # 4. Verify submit credits the exact same 400 UGX upon validation
+    submitted = client.post("/work/3/submit", headers=h, json={"clean_lug": "okukola obulungi"})
+    assert submitted.status_code == 200
+    assert submitted.json()["reward_ugx"] == 400
